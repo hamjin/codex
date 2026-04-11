@@ -345,6 +345,7 @@ pub struct SpawnedProcess {
     pub stdout_rx: mpsc::Receiver<Vec<u8>>,
     pub stderr_rx: mpsc::Receiver<Vec<u8>>,
     pub exit_rx: oneshot::Receiver<i32>,
+    pub child_pid: Option<u32>,
 }
 
 /// Driver-backed process handles for non-standard spawn backends.
@@ -452,5 +453,6 @@ pub fn spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess {
         stdout_rx,
         stderr_rx,
         exit_rx: exit_rx_out,
+        child_pid: None,
     }
 }

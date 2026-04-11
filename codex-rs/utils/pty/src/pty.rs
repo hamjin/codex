@@ -274,6 +274,7 @@ async fn spawn_process_portable(
         stdout_rx,
         stderr_rx,
         exit_rx,
+        child_pid: process_group_id,
     })
 }
 
@@ -428,6 +429,7 @@ async fn spawn_process_preserving_fds(
         stdout_rx,
         stderr_rx,
         exit_rx,
+        child_pid: Some(process_group_id),
     })
 }
 

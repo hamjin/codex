@@ -134,6 +134,7 @@ pub(super) async fn try_run_zsh_fork(
     let options = ExecOptions {
         expiration: req.timeout_ms.into(),
         capture_policy: ExecCapturePolicy::ShellTool,
+        log_macos_seatbelt_denials: ctx.turn.config.shell_command.log_macos_seatbelt_denials,
     };
     let sandbox_exec_request = attempt
         .env_for(
@@ -160,6 +161,7 @@ pub(super) async fn try_run_zsh_fork(
         network_sandbox_policy,
         windows_sandbox_filesystem_overrides: _windows_sandbox_filesystem_overrides,
         arg0,
+        log_macos_seatbelt_denials: _,
     } = sandbox_exec_request;
     let ParsedShellCommand { script, login, .. } = extract_shell_script(&command)?;
     let effective_timeout = Duration::from_millis(
@@ -184,6 +186,7 @@ pub(super) async fn try_run_zsh_fork(
         windows_sandbox_workspace_roots,
         codex_linux_sandbox_exe: ctx.turn.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: ctx.turn.features.use_legacy_landlock(),
+        log_macos_seatbelt_denials: ctx.turn.config.shell_command.log_macos_seatbelt_denials,
     };
     let main_execve_wrapper_exe = ctx
         .session
@@ -285,6 +288,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         windows_sandbox_workspace_roots: exec_request.windows_sandbox_workspace_roots.clone(),
         codex_linux_sandbox_exe: ctx.turn.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: ctx.turn.features.use_legacy_landlock(),
+        log_macos_seatbelt_denials: exec_request.log_macos_seatbelt_denials,
     };
     let escalation_policy = CoreShellActionProvider {
         policy: Arc::clone(&exec_policy),
@@ -777,6 +781,7 @@ struct CoreShellCommandExecutor {
     windows_sandbox_workspace_roots: Vec<AbsolutePathBuf>,
     codex_linux_sandbox_exe: Option<PathBuf>,
     use_legacy_landlock: bool,
+    log_macos_seatbelt_denials: bool,
 }
 
 struct PrepareSandboxedExecParams<'a> {
@@ -824,6 +829,7 @@ impl ShellCommandExecutor for CoreShellCommandExecutor {
                 file_system_sandbox_policy: self.file_system_sandbox_policy.clone(),
                 network_sandbox_policy: self.network_sandbox_policy,
                 windows_sandbox_filesystem_overrides: None,
+                log_macos_seatbelt_denials: self.log_macos_seatbelt_denials,
                 arg0: self.arg0.clone(),
             },
             /*stdout_stream*/ None,
@@ -938,6 +944,7 @@ impl CoreShellCommandExecutor {
         let options = ExecOptions {
             expiration: ExecExpiration::DefaultTimeout,
             capture_policy: ExecCapturePolicy::ShellTool,
+            log_macos_seatbelt_denials: self.log_macos_seatbelt_denials,
         };
         let exec_request = sandbox_manager.transform(SandboxTransformRequest {
             command,

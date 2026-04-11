@@ -260,6 +260,7 @@ async fn spawn_process_with_stdin_mode(
         stdout_rx,
         stderr_rx,
         exit_rx,
+        child_pid: Some(pid),
     })
 }
 

@@ -84,6 +84,7 @@ fn test_exec_request(
         turn.windows_sandbox_level,
         windows_sandbox_private_desktop,
         permission_profile,
+        /*log_macos_seatbelt_denials*/ false,
         arg0,
     )
 }

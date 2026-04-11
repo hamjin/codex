@@ -17,7 +17,9 @@ use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_config::config_toml::ShellCommandToml;
 use codex_config::config_toml::ToolsToml;
+use codex_config::config_toml::UnifiedExecToml;
 use codex_config::loader::project_trust_key;
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::FilesystemPermissionsToml;
@@ -345,6 +347,7 @@ web_search = true
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: None,
+            ..Default::default()
         })
     );
 }
@@ -364,6 +367,7 @@ web_search = false
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: None,
+            ..Default::default()
         })
     );
 }
@@ -382,6 +386,7 @@ fn tools_experimental_request_user_input_defaults_to_enabled() {
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: true }),
+            ..Default::default()
         })
     );
 }
@@ -401,7 +406,71 @@ enabled = false
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: false }),
+            ..Default::default()
         })
+    );
+}
+
+#[test]
+fn tools_shell_command_and_unified_exec_config_deserializes() {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[tools.shell_command]
+log_macos_seatbelt_denials = true
+
+[tools.unified_exec]
+log_macos_seatbelt_denials = false
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    assert_eq!(
+        cfg.tools,
+        Some(ToolsToml {
+            shell_command: Some(ShellCommandToml {
+                log_macos_seatbelt_denials: Some(true),
+            }),
+            unified_exec: Some(UnifiedExecToml {
+                log_macos_seatbelt_denials: Some(false),
+            }),
+            ..Default::default()
+        })
+    );
+}
+
+#[test]
+fn tool_runtime_configs_default_to_false() {
+    let cfg = ConfigToml {
+        tools: Some(ToolsToml {
+            shell_command: Some(ShellCommandToml {
+                log_macos_seatbelt_denials: Some(true),
+            }),
+            unified_exec: Some(UnifiedExecToml {
+                log_macos_seatbelt_denials: Some(false),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_shell_command_config(&cfg),
+        ShellCommandConfig {
+            log_macos_seatbelt_denials: true,
+        }
+    );
+    assert_eq!(
+        resolve_unified_exec_config(&cfg),
+        UnifiedExecConfig {
+            log_macos_seatbelt_denials: false,
+        }
+    );
+    assert_eq!(
+        resolve_shell_command_config(&ConfigToml::default()),
+        ShellCommandConfig::default(),
+    );
+    assert_eq!(
+        resolve_unified_exec_config(&ConfigToml::default()),
+        UnifiedExecConfig::default(),
     );
 }
 
@@ -415,6 +484,7 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
                 experimental_request_user_input: Some(ExperimentalRequestUserInput {
                     enabled: false,
                 }),
+                ..Default::default()
             }),
             ..ConfigToml::default()
         },
