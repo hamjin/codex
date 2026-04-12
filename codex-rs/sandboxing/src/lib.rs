@@ -5,6 +5,7 @@ mod manager;
 pub mod policy_transforms;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
+mod violation;
 
 #[cfg(target_os = "linux")]
 pub use bwrap::find_system_bwrap_in_path;
@@ -20,6 +21,15 @@ pub use manager::SandboxablePreference;
 pub use manager::compatibility_sandbox_policy_for_permission_profile;
 pub use manager::get_platform_sandbox;
 pub use manager::with_managed_mitm_ca_readable_root;
+pub use violation::FileSystemSandboxViolation;
+pub use violation::FileSystemSandboxViolationReason;
+pub use violation::NetworkSandboxViolation;
+pub use violation::SandboxViolationEvent;
+pub use violation::classify_filesystem_sandbox_violation;
+pub use violation::is_likely_sandbox_denied;
+pub use violation::record_filesystem_sandbox_violation;
+pub use violation::record_network_sandbox_violation;
+pub use violation::record_sandbox_violation;
 
 use codex_protocol::error::CodexErr;
 
