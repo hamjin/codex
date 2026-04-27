@@ -385,6 +385,7 @@ pub fn build_exec_request(
     let options = ExecOptions {
         expiration,
         capture_policy,
+        sandbox_violation_context: None,
     };
     let mut exec_req = manager
         .transform(SandboxTransformRequest {
@@ -460,6 +461,7 @@ pub(crate) async fn execute_exec_request(
         file_system_sandbox_policy: _,
         network_sandbox_policy,
         windows_sandbox_filesystem_overrides,
+        sandbox_violation_context,
         arg0,
     } = exec_request;
 
@@ -491,7 +493,13 @@ pub(crate) async fn execute_exec_request(
     )
     .await;
     let duration = start.elapsed();
-    finalize_exec_result(raw_output_result, sandbox, duration)
+    finalize_exec_result(
+        raw_output_result,
+        sandbox,
+        duration,
+        sandbox_violation_context.as_ref(),
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -747,10 +755,11 @@ async fn exec_windows_sandbox(
     })
 }
 
-fn finalize_exec_result(
+async fn finalize_exec_result(
     raw_output_result: std::result::Result<RawExecToolCallOutput, CodexErr>,
     sandbox_type: SandboxType,
     duration: Duration,
+    sandbox_violation_context: Option<&crate::security_events::SandboxViolationAuditContext>,
 ) -> Result<ExecToolCallOutput> {
     match raw_output_result {
         Ok(raw_output) => {
@@ -792,7 +801,15 @@ fn finalize_exec_result(
             }
 
             if is_likely_sandbox_denied(sandbox_type, &exec_output) {
-                record_filesystem_sandbox_violation(sandbox_type, &exec_output);
+                if let Some(violation) =
+                    record_filesystem_sandbox_violation(sandbox_type, &exec_output)
+                {
+                    crate::security_events::record_sandbox_violation_audit(
+                        sandbox_violation_context,
+                        &codex_sandboxing::SandboxViolationEvent::FileSystem(violation),
+                    )
+                    .await;
+                }
                 return Err(CodexErr::Sandbox(SandboxErr::Denied {
                     output: Box::new(exec_output),
                     network_policy_decision: None,
