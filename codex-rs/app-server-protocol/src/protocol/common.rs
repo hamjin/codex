@@ -2449,6 +2449,9 @@ mod tests {
                         "agentRole": null,
                         "gitInfo": null,
                         "name": null,
+                        "protectedDataMode": {
+                            "active": false
+                        },
                         "turns": []
                     },
                     "model": "gpt-5",

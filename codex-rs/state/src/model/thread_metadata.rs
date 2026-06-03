@@ -550,6 +550,7 @@ mod tests {
             git_sha: None,
             git_branch: None,
             git_origin_url: None,
+            protected_data_mode: r#"{"active":false}"#.to_string(),
         }
     }
 
@@ -580,6 +581,7 @@ mod tests {
             git_sha: None,
             git_branch: None,
             git_origin_url: None,
+            protected_data_mode: Default::default(),
         }
     }
 

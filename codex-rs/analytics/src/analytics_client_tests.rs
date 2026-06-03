@@ -184,6 +184,7 @@ fn sample_thread_with_metadata(
         agent_role: None,
         git_info: None,
         name: None,
+        protected_data_mode: Default::default(),
         turns: Vec::new(),
     }
 }

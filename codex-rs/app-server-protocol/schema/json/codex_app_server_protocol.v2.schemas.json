@@ -13448,6 +13448,9 @@
               "$ref": "#/definitions/ProtectedDataModeState"
             }
           ],
+          "default": {
+            "active": false
+          },
           "description": "Protected data mode state for this thread."
         },
         "sessionId": {
@@ -13502,7 +13505,6 @@
         "id",
         "modelProvider",
         "preview",
-        "protectedDataMode",
         "sessionId",
         "source",
         "status",

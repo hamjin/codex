@@ -323,6 +323,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         agent_role: None,
         git_info: None,
         name: None,
+        protected_data_mode: Default::default(),
         turns: vec![
             codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
@@ -715,6 +716,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             agent_role: None,
             git_info: None,
             name: Some("thread".to_string()),
+            protected_data_mode: Default::default(),
             turns: vec![],
         },
         model: "gpt-5.4".to_string(),

@@ -1352,6 +1352,7 @@ mod tests {
                 base_instructions: None,
                 dynamic_tools: None,
                 memory_mode: Some("polluted".to_string()),
+                protected_data_mode: None,
                 multi_agent_version: None,
             },
             git: None,
@@ -1413,6 +1414,7 @@ mod tests {
                 base_instructions: None,
                 dynamic_tools: None,
                 memory_mode: None,
+                protected_data_mode: None,
                 multi_agent_version: None,
             },
             git: Some(GitInfo {

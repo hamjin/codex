@@ -1218,11 +1218,10 @@ async fn maybe_request_mcp_tool_approval(
     )
     .await
     {
-        Some(PermissionRequestDecision::Allow) => {
-            if !protected_data_mode_active {
-                return Some(McpToolApprovalDecision::Accept);
-            }
+        Some(PermissionRequestDecision::Allow) if !protected_data_mode_active => {
+            return Some(McpToolApprovalDecision::Accept);
         }
+        Some(PermissionRequestDecision::Allow) => {}
         Some(PermissionRequestDecision::Deny { message }) => {
             return Some(McpToolApprovalDecision::Decline {
                 message: Some(message),

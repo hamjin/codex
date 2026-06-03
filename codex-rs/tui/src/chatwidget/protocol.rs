@@ -60,7 +60,7 @@ impl ChatWidget {
                 } else {
                     self.add_info_message(
                         "Protected data mode is no longer active for this thread.".to_string(),
-                        None,
+                        /*hint*/ None,
                     );
                 }
             }
