@@ -35,6 +35,8 @@ pub struct DenialLogger {
     pid_tracker: Option<PidTracker>,
     #[cfg(target_os = "macos")]
     log_reader: Option<JoinHandle<Vec<u8>>>,
+    #[cfg(target_os = "macos")]
+    stderr_reader: Option<JoinHandle<()>>,
 }
 
 impl DenialLogger {
@@ -44,6 +46,8 @@ impl DenialLogger {
         let mut log_stream = start_log_stream()?;
         let stdout = log_stream.stdout.take()?;
         let stderr = log_stream.stderr.take()?;
+        let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
+        let stdout_ready_tx = ready_tx.clone();
         let log_reader = tokio::spawn(async move {
             let mut reader = tokio::io::BufReader::new(stdout);
             let mut logs = Vec::new();
@@ -52,7 +56,11 @@ impl DenialLogger {
                 match reader.read_until(b'\n', &mut chunk).await {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
-                        logs.extend_from_slice(&chunk);
+                        if chunk.starts_with(LOG_STREAM_READY_PREFIX.as_bytes()) {
+                            let _ = stdout_ready_tx.try_send(());
+                        } else {
+                            logs.extend_from_slice(&chunk);
+                        }
                         chunk.clear();
                     }
                 }
@@ -60,44 +68,38 @@ impl DenialLogger {
             logs
         });
 
-        let mut stderr = tokio::io::BufReader::new(stderr);
-        let mut ready_line = String::new();
-        let ready = tokio::time::timeout(LOG_STREAM_READY_TIMEOUT, async {
-            loop {
-                ready_line.clear();
-                let bytes_read = stderr.read_line(&mut ready_line).await.ok()?;
-                if bytes_read == 0 {
-                    return None;
+        let stderr_reader = tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut line = String::new();
+            while reader
+                .read_line(&mut line)
+                .await
+                .is_ok_and(|bytes_read| bytes_read > 0)
+            {
+                if line.starts_with(LOG_STREAM_READY_PREFIX) {
+                    let _ = ready_tx.try_send(());
                 }
-                if ready_line.starts_with(LOG_STREAM_READY_PREFIX) {
-                    return Some(());
-                }
+                line.clear();
             }
-        })
-        .await
-        .is_ok_and(|result| result.is_some())
+        });
+
+        let ready = tokio::time::timeout(LOG_STREAM_READY_TIMEOUT, ready_rx.recv())
+            .await
+            .is_ok_and(|result| result.is_some())
             && log_stream.try_wait().ok().flatten().is_none();
         if !ready {
             let _ = log_stream.kill().await;
             let _ = log_stream.wait().await;
             log_reader.abort();
+            stderr_reader.abort();
             return None;
         }
-        tokio::spawn(async move {
-            let mut line = String::new();
-            while stderr
-                .read_line(&mut line)
-                .await
-                .is_ok_and(|bytes_read| bytes_read > 0)
-            {
-                line.clear();
-            }
-        });
 
         Some(Self {
             log_stream,
             pid_tracker: None,
             log_reader: Some(log_reader),
+            stderr_reader: Some(stderr_reader),
         })
     }
 
@@ -134,6 +136,9 @@ impl DenialLogger {
         }
         let _ = self.log_stream.kill().await;
         let _ = self.log_stream.wait().await;
+        if let Some(handle) = self.stderr_reader.take() {
+            let _ = handle.await;
+        }
 
         let logs_bytes = match self.log_reader.take() {
             Some(handle) => handle.await.unwrap_or_default(),
