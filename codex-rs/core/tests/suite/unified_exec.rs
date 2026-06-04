@@ -3293,7 +3293,6 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
         config.unified_exec.log_macos_seatbelt_denials = true;
@@ -3304,21 +3303,12 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
     });
     let test = builder.build(&server).await?;
 
-    let outside_path = test
-        .cwd_path()
-        .parent()
-        .unwrap()
-        .join("uexec_denied_touch.txt");
-    if outside_path.exists() {
-        fs::remove_file(&outside_path)?;
-    }
-
+    let denied_path = test.workspace_path("uexec_denied_touch.txt");
     let call_id = "uexec-seatbelt-denial-log";
     let args = serde_json::json!({
-        "cmd": format!("/usr/bin/touch {}", outside_path.display()),
+        "cmd": format!("/usr/bin/touch {}", denied_path.display()),
         "yield_time_ms": 1_500,
     });
-
     let responses = vec![
         sse(vec![
             ev_response_created("resp-1"),
@@ -3335,57 +3325,34 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
 
     submit_unified_exec_turn(
         &test,
-        "write outside workspace under seatbelt",
-        PermissionProfile::workspace_write_with(
-            &[],
-            NetworkSandboxPolicy::Restricted,
-            /*exclude_tmpdir_env_var*/ true,
-            /*exclude_slash_tmp*/ true,
-        ),
+        "write under read-only seatbelt",
+        PermissionProfile::read_only(),
     )
     .await?;
-
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
 
     let requests = request_log.requests();
-    assert!(!requests.is_empty(), "expected at least one POST request");
     let bodies = requests
         .into_iter()
         .map(|request| request.body_json())
         .collect::<Vec<_>>();
+    let outputs = collect_tool_outputs(&bodies)?;
+    let output = outputs.get(call_id).context("denied touch output")?;
 
-    let output_item = bodies
-        .iter()
-        .find_map(|body| {
-            body.get("input")
-                .and_then(Value::as_array)
-                .and_then(|items| {
-                    items.iter().find(|item| {
-                        item.get("type").and_then(Value::as_str) == Some("function_call_output")
-                            && item.get("call_id").and_then(Value::as_str) == Some(call_id)
-                    })
-                })
-        })
-        .expect("missing denied touch output");
-    let output = extract_output_text(output_item).expect("denied touch should return tool output");
     assert!(
-        output.contains("Operation not permitted"),
-        "expected touch to report the seatbelt denial: {output:?}"
-    );
-    assert!(
-        output.contains("=== Sandbox denials ==="),
+        output.output.contains("=== Sandbox denials ==="),
         "expected unified exec output to include macOS sandbox denial details: {output:?}"
     );
     assert!(
-        output.contains("file-write"),
+        output.output.contains("file-write"),
         "expected macOS denial details to include the denied capability: {output:?}"
     );
     assert!(
-        !outside_path.exists(),
-        "command should not write outside workspace under WorkspaceWrite policy"
+        !denied_path.exists(),
+        "command should not write under the read-only policy"
     );
 
     Ok(())

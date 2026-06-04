@@ -17,8 +17,6 @@ use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio_util::sync::CancellationToken;
 
-use crate::macos_denials::SeatbeltDenialLogger;
-use crate::macos_denials::format_sandbox_denials;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::SandboxPermissions;
@@ -45,6 +43,8 @@ use codex_sandboxing::SandboxTransformRequest;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
+use codex_sandboxing::seatbelt_denials::DenialLogger;
+use codex_sandboxing::seatbelt_denials::format_sandbox_denials;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use codex_utils_pty::process_group::kill_child_process_group;
@@ -462,8 +462,8 @@ pub(crate) async fn execute_exec_request(
         file_system_sandbox_policy: _,
         network_sandbox_policy,
         windows_sandbox_filesystem_overrides,
-        arg0,
         log_macos_seatbelt_denials,
+        arg0,
     } = exec_request;
 
     let params = ExecParams {
@@ -1027,7 +1027,7 @@ async fn exec(
     })?;
     let arg0_ref = arg0.as_deref();
     let mut denial_logger = if log_macos_seatbelt_denials && sandbox == SandboxType::MacosSeatbelt {
-        SeatbeltDenialLogger::new()
+        DenialLogger::new().await
     } else {
         None
     };

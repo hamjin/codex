@@ -1,3 +1,5 @@
+//! Descendant process tracking for macOS Seatbelt denial collection.
+
 use std::collections::HashSet;
 use tokio::task::JoinHandle;
 use tracing::warn;

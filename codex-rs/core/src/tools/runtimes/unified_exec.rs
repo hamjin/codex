@@ -431,6 +431,7 @@ mod tests {
         );
 
         assert_eq!(options.capture_policy, ExecCapturePolicy::ShellTool);
+        assert!(!options.log_macos_seatbelt_denials);
         match options.expiration {
             ExecExpiration::TimeoutOrCancellation {
                 timeout,

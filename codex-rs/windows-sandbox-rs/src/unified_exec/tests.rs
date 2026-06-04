@@ -125,6 +125,7 @@ async fn collect_stdout_and_exit(
         mut stdout_rx,
         stderr_rx: _stderr_rx,
         exit_rx,
+        ..
     } = spawned;
     let stdout_task = tokio::spawn(async move {
         let mut stdout = Vec::new();

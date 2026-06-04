@@ -15,7 +15,6 @@ use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_policy::ExecApprovalRequest;
-use crate::macos_denials::SeatbeltDenialLogger;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
 use crate::tools::context::ExecCommandToolOutput;
@@ -55,6 +54,8 @@ use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_sandboxing::SandboxType;
+use codex_sandboxing::seatbelt_denials::DenialLogger;
 use codex_tools::ToolName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::approx_token_count;
@@ -971,6 +972,7 @@ impl UnifiedExecProcessManager {
                 spawned.map_err(|err| UnifiedExecError::create_process(err.to_string()))?,
                 request.sandbox,
                 spawn_lifecycle,
+                /*denial_logger*/ None,
             )
             .await;
         }
@@ -990,18 +992,17 @@ impl UnifiedExecProcessManager {
             return UnifiedExecProcess::from_exec_server_started(started, request.sandbox).await;
         }
 
+        let mut denial_logger = if request.log_macos_seatbelt_denials
+            && request.sandbox == SandboxType::MacosSeatbelt
+        {
+            DenialLogger::new().await
+        } else {
+            None
+        };
         let (program, args) = request
             .command
             .split_first()
             .ok_or(UnifiedExecError::MissingCommandLine)?;
-        let mut denial_logger = if request.log_macos_seatbelt_denials
-            && request.sandbox == codex_sandboxing::SandboxType::MacosSeatbelt
-        {
-            SeatbeltDenialLogger::new()
-        } else {
-            None
-        };
-
         let spawn_result = if tty {
             codex_utils_pty::pty::spawn_process_with_inherited_fds(
                 program,

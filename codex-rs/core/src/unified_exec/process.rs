@@ -13,8 +13,6 @@ use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::exec::is_likely_sandbox_denied;
-use crate::macos_denials::SeatbeltDenialLogger;
-use crate::macos_denials::format_sandbox_denials;
 use codex_exec_server::ExecProcess;
 use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
 use codex_exec_server::ReadResponse as ExecReadResponse;
@@ -24,6 +22,8 @@ use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_sandboxing::SandboxType;
+use codex_sandboxing::seatbelt_denials::DenialLogger;
+use codex_sandboxing::seatbelt_denials::format_sandbox_denials;
 use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::ProcessSignal as PtyProcessSignal;
@@ -66,8 +66,8 @@ pub(crate) struct OutputHandles {
     pub(crate) cancellation_token: CancellationToken,
 }
 
-async fn append_macos_denials(
-    logger: Option<SeatbeltDenialLogger>,
+async fn append_seatbelt_denials(
+    logger: Option<DenialLogger>,
     buffer: &OutputBuffer,
     output_notify: &Arc<Notify>,
     output_tx: &broadcast::Sender<Vec<u8>>,
@@ -338,7 +338,7 @@ impl UnifiedExecProcess {
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
         spawn_lifecycle: SpawnLifecycleHandle,
-        mut denial_logger: Option<SeatbeltDenialLogger>,
+        mut denial_logger: Option<DenialLogger>,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -364,17 +364,13 @@ impl UnifiedExecProcess {
 
         match exit_rx.try_recv() {
             Ok(exit_code) => {
-                managed
-                    .append_macos_denials_to_output(denial_logger.take())
-                    .await;
+                managed.append_seatbelt_denials(denial_logger.take()).await;
                 managed.signal_exit(Some(exit_code));
                 managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
             }
             Err(TryRecvError::Closed) => {
-                managed
-                    .append_macos_denials_to_output(denial_logger.take())
-                    .await;
+                managed.append_seatbelt_denials(denial_logger.take()).await;
                 managed.signal_exit(/*exit_code*/ None);
                 managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
@@ -383,9 +379,7 @@ impl UnifiedExecProcess {
         }
 
         if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
-            managed
-                .append_macos_denials_to_output(denial_logger.take())
-                .await;
+            managed.append_seatbelt_denials(denial_logger.take()).await;
             managed.signal_exit(exit_result.ok());
             managed.check_for_sandbox_denial().await?;
             return Ok(managed);
@@ -399,7 +393,7 @@ impl UnifiedExecProcess {
             let output_tx = managed.output_tx.clone();
             async move {
                 let exit_code = exit_rx.await.ok();
-                append_macos_denials(denial_logger, &output_buffer, &output_notify, &output_tx)
+                append_seatbelt_denials(denial_logger, &output_buffer, &output_notify, &output_tx)
                     .await;
                 let state = state_tx.borrow().clone();
                 let _ = state_tx.send_replace(state.exited(exit_code));
@@ -410,8 +404,8 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
-    async fn append_macos_denials_to_output(&self, logger: Option<SeatbeltDenialLogger>) {
-        append_macos_denials(
+    async fn append_seatbelt_denials(&self, logger: Option<DenialLogger>) {
+        append_seatbelt_denials(
             logger,
             &self.output_buffer,
             &self.output_notify,

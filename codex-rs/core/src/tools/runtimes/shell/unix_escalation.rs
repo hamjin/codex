@@ -160,8 +160,8 @@ pub(super) async fn try_run_zsh_fork(
         file_system_sandbox_policy,
         network_sandbox_policy,
         windows_sandbox_filesystem_overrides: _windows_sandbox_filesystem_overrides,
+        log_macos_seatbelt_denials,
         arg0,
-        log_macos_seatbelt_denials: _,
     } = sandbox_exec_request;
     let ParsedShellCommand { script, login, .. } = extract_shell_script(&command)?;
     let effective_timeout = Duration::from_millis(
@@ -186,7 +186,7 @@ pub(super) async fn try_run_zsh_fork(
         windows_sandbox_workspace_roots,
         codex_linux_sandbox_exe: ctx.turn.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: ctx.turn.features.use_legacy_landlock(),
-        log_macos_seatbelt_denials: ctx.turn.config.shell_command.log_macos_seatbelt_denials,
+        log_macos_seatbelt_denials,
     };
     let main_execve_wrapper_exe = ctx
         .session
