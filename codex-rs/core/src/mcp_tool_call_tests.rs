@@ -77,6 +77,7 @@ fn approval_metadata(
         connector_id: connector_id.map(str::to_string),
         connector_name: connector_name.map(str::to_string),
         connector_description: connector_description.map(str::to_string),
+        connected_account_email: None,
         plugin_id: None,
         tool_title: tool_title.map(str::to_string),
         tool_description: tool_description.map(str::to_string),
@@ -1159,6 +1160,7 @@ async fn codex_apps_tool_call_request_meta_includes_turn_metadata_and_codex_apps
         connector_id: Some("calendar".to_string()),
         connector_name: Some("Calendar".to_string()),
         connector_description: Some("Manage events".to_string()),
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Create Event".to_string()),
         tool_description: Some("Create a calendar event.".to_string()),
@@ -1575,17 +1577,15 @@ fn guardian_mcp_review_request_includes_invocation_metadata() {
         })),
     };
 
-    let request = build_guardian_mcp_tool_review_request(
-        "call-1",
-        &invocation,
-        Some(&approval_metadata(
-            Some("playwright"),
-            Some("Playwright"),
-            Some("Browser automation"),
-            Some("Navigate"),
-            Some("Open a page"),
-        )),
+    let mut metadata = approval_metadata(
+        Some("playwright"),
+        Some("Playwright"),
+        Some("Browser automation"),
+        Some("Navigate"),
+        Some("Open a page"),
     );
+    metadata.connected_account_email = Some("owner@openai.com".to_string());
+    let request = build_guardian_mcp_tool_review_request("call-1", &invocation, Some(&metadata));
 
     assert_eq!(
         request,
@@ -1599,6 +1599,7 @@ fn guardian_mcp_review_request_includes_invocation_metadata() {
             connector_id: Some("playwright".to_string()),
             connector_name: Some("Playwright".to_string()),
             connector_description: Some("Browser automation".to_string()),
+            connected_account_email: Some("owner@openai.com".to_string()),
             tool_title: Some("Navigate".to_string()),
             tool_description: Some("Open a page".to_string()),
             annotations: None,
@@ -1618,6 +1619,7 @@ fn guardian_mcp_review_request_includes_annotations_when_present() {
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: None,
         tool_description: None,
@@ -1638,6 +1640,7 @@ fn guardian_mcp_review_request_includes_annotations_when_present() {
             connector_id: None,
             connector_name: None,
             connector_description: None,
+            connected_account_email: None,
             tool_title: None,
             tool_description: None,
             annotations: Some(GuardianMcpAnnotations {
@@ -1645,6 +1648,40 @@ fn guardian_mcp_review_request_includes_annotations_when_present() {
                 open_world_hint: Some(true),
                 read_only_hint: Some(false),
             }),
+        }
+    );
+}
+
+#[test]
+fn guardian_mcp_review_request_ignores_untrusted_connected_account_email() {
+    let invocation = McpInvocation {
+        server: "custom_server".to_string(),
+        tool: "dangerous_tool".to_string(),
+        arguments: None,
+    };
+    let mut metadata = approval_metadata(
+        /*connector_id*/ None, /*connector_name*/ None,
+        /*connector_description*/ None, /*tool_title*/ None,
+        /*tool_description*/ None,
+    );
+    metadata.connected_account_email = Some("spoofed@example.com".to_string());
+
+    let request = build_guardian_mcp_tool_review_request("call-1", &invocation, Some(&metadata));
+
+    assert_eq!(
+        request,
+        GuardianApprovalRequest::McpToolCall {
+            id: "call-1".to_string(),
+            server: "custom_server".to_string(),
+            tool_name: "dangerous_tool".to_string(),
+            arguments: None,
+            connector_id: None,
+            connector_name: None,
+            connector_description: None,
+            connected_account_email: None,
+            tool_title: None,
+            tool_description: None,
+            annotations: None,
         }
     );
 }
@@ -2283,6 +2320,7 @@ async fn approve_mode_skips_when_annotations_do_not_require_approval() {
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Read Only Tool".to_string()),
         tool_description: None,
@@ -2357,6 +2395,7 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Read Only Tool".to_string()),
         tool_description: None,
@@ -2414,6 +2453,7 @@ async fn permission_request_hook_allows_mcp_tool_call() {
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Create entities".to_string()),
         tool_description: None,
@@ -2550,6 +2590,7 @@ async fn permission_request_hook_runs_after_remembered_mcp_approval() {
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Create entities".to_string()),
         tool_description: None,
@@ -2637,6 +2678,7 @@ async fn guardian_mode_mcp_denial_returns_rationale_message() {
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Dangerous Tool".to_string()),
         tool_description: Some("Reads calendar data.".to_string()),
@@ -2691,6 +2733,7 @@ async fn prompt_mode_waits_for_approval_when_annotations_do_not_require_approval
         connector_id: None,
         connector_name: None,
         connector_description: None,
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Read Only Tool".to_string()),
         tool_description: None,
@@ -2746,6 +2789,7 @@ async fn full_access_mode_skips_mcp_tool_approval_for_all_approval_modes() {
         connector_id: Some("calendar".to_string()),
         connector_name: Some("Calendar".to_string()),
         connector_description: Some("Manage events".to_string()),
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Dangerous Tool".to_string()),
         tool_description: Some("Performs a risky action.".to_string()),
@@ -2799,6 +2843,7 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
         connector_id: Some("calendar".to_string()),
         connector_name: Some("Calendar".to_string()),
         connector_description: Some("Manage events".to_string()),
+        connected_account_email: None,
         plugin_id: None,
         tool_title: Some("Dangerous Tool".to_string()),
         tool_description: Some("Performs a risky action.".to_string()),
