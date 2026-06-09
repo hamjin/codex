@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
 #[cfg(target_os = "macos")]
+use std::collections::VecDeque;
+#[cfg(target_os = "macos")]
 use tokio::io::AsyncBufReadExt;
 #[cfg(target_os = "macos")]
 use tokio::process::Child;
@@ -16,6 +18,8 @@ const LOG_STREAM_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_
 const LOG_STREAM_FLUSH_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
 #[cfg(target_os = "macos")]
 const LOG_STREAM_READY_PREFIX: &str = "Filtering the log data using ";
+#[cfg(target_os = "macos")]
+const MAX_COLLECTED_LOG_CHARS: usize = 1_000;
 
 #[cfg(target_os = "macos")]
 mod pid_tracker;
@@ -34,7 +38,7 @@ pub struct DenialLogger {
     #[cfg(target_os = "macos")]
     pid_tracker: Option<PidTracker>,
     #[cfg(target_os = "macos")]
-    log_reader: Option<JoinHandle<Vec<u8>>>,
+    log_reader: Option<JoinHandle<String>>,
     #[cfg(target_os = "macos")]
     stderr_reader: Option<JoinHandle<()>>,
 }
@@ -50,7 +54,8 @@ impl DenialLogger {
         let stdout_ready_tx = ready_tx.clone();
         let log_reader = tokio::spawn(async move {
             let mut reader = tokio::io::BufReader::new(stdout);
-            let mut logs = Vec::new();
+            let mut log_lines = VecDeque::new();
+            let mut collected_chars = 0;
             let mut chunk = Vec::new();
             loop {
                 match reader.read_until(b'\n', &mut chunk).await {
@@ -59,13 +64,13 @@ impl DenialLogger {
                         if chunk.starts_with(LOG_STREAM_READY_PREFIX.as_bytes()) {
                             let _ = stdout_ready_tx.try_send(());
                         } else {
-                            logs.extend_from_slice(&chunk);
+                            append_log_line(&mut log_lines, &mut collected_chars, &chunk);
                         }
                         chunk.clear();
                     }
                 }
             }
-            logs
+            log_lines.into_iter().collect()
         });
 
         let stderr_reader = tokio::spawn(async move {
@@ -140,14 +145,13 @@ impl DenialLogger {
             let _ = handle.await;
         }
 
-        let logs_bytes = match self.log_reader.take() {
+        let logs = match self.log_reader.take() {
             Some(handle) => handle.await.unwrap_or_default(),
-            None => Vec::new(),
+            None => String::new(),
         };
         if pid_set.is_empty() {
             return Vec::new();
         }
-        let logs = String::from_utf8_lossy(&logs_bytes);
 
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut denials: Vec<SandboxDenial> = Vec::new();
@@ -169,6 +173,23 @@ impl DenialLogger {
     pub async fn finish(self) -> Vec<SandboxDenial> {
         Vec::new()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn append_log_line(log_lines: &mut VecDeque<String>, collected_chars: &mut usize, line: &[u8]) {
+    let line = String::from_utf8_lossy(line).into_owned();
+    let line_chars = line.chars().count();
+    if line_chars > MAX_COLLECTED_LOG_CHARS {
+        return;
+    }
+    while collected_chars.saturating_add(line_chars) > MAX_COLLECTED_LOG_CHARS {
+        let Some(removed) = log_lines.pop_front() else {
+            return;
+        };
+        *collected_chars = collected_chars.saturating_sub(removed.chars().count());
+    }
+    *collected_chars += line_chars;
+    log_lines.push_back(line);
 }
 
 #[cfg(target_os = "macos")]

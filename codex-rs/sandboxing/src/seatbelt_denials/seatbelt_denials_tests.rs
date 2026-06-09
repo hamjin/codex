@@ -26,3 +26,17 @@ fn formats_denials_for_command_output() {
         "\n=== Sandbox denials ===\n(touch) file-write-create /private/tmp/nope\n"
     );
 }
+
+#[test]
+fn collected_logs_are_capped_at_one_thousand_characters() {
+    let mut log_lines = VecDeque::new();
+    let mut collected_chars = 0;
+    let old_line = format!("{}\n", "a".repeat(599));
+    let recent_line = format!("{}\n", "é".repeat(499));
+
+    append_log_line(&mut log_lines, &mut collected_chars, old_line.as_bytes());
+    append_log_line(&mut log_lines, &mut collected_chars, recent_line.as_bytes());
+
+    assert_eq!(log_lines, VecDeque::from([recent_line]));
+    assert_eq!(collected_chars, 500);
+}
