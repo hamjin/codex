@@ -2571,16 +2571,6 @@
       ],
       "type": "string"
     },
-    "ShellCommandToml": {
-      "additionalProperties": false,
-      "properties": {
-        "log_macos_seatbelt_denials": {
-          "description": "On macOS, append seatbelt sandbox denials to sandboxed command output.",
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
         {
@@ -2767,15 +2757,6 @@
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
-        },
-        "shell_command": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ShellCommandToml"
-            }
-          ],
-          "default": null,
-          "description": "Runtime settings for the model-facing `shell_command` tool."
         },
         "unified_exec": {
           "allOf": [

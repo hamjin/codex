@@ -361,63 +361,6 @@ async fn sandbox_denied_shell_command_returns_original_output() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_command_logs_macos_seatbelt_denials() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    skip_if_sandbox!(Ok(()));
-
-    let server = start_mock_server().await;
-    let mut builder = test_codex().with_config(|config| {
-        config.shell_command.log_macos_seatbelt_denials = true;
-    });
-    let test = builder.build(&server).await?;
-
-    let denied_path = test.workspace_path("shell_denied_touch.txt");
-    let call_id = "shell-command-seatbelt-denial-log";
-    let args = json!({
-        "command": format!("/usr/bin/touch {}", denied_path.display()),
-        "login": false,
-        "timeout_ms": 5_000,
-    });
-    let responses = vec![
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-        sse(vec![
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-2"),
-        ]),
-    ];
-    let response_mock = mount_sse_sequence(&server, responses).await;
-
-    test.submit_turn_with_permission_profile(
-        "write under read-only seatbelt",
-        PermissionProfile::read_only(),
-    )
-    .await?;
-
-    let output = response_mock
-        .function_call_output_text(call_id)
-        .context("denied touch output")?;
-    assert!(
-        output.contains("=== Sandbox denials ==="),
-        "expected shell output to include macOS sandbox denial details: {output:?}"
-    );
-    assert!(
-        output.contains("file-write"),
-        "expected macOS denial details to include the denied capability: {output:?}"
-    );
-    assert!(
-        !denied_path.exists(),
-        "command should not write under the read-only policy"
-    );
-
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_command_enforces_glob_deny_read_policy() -> Result<()> {
     skip_if_no_network!(Ok(()));

@@ -17,7 +17,6 @@ use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
-use codex_config::config_toml::ShellCommandToml;
 use codex_config::config_toml::ToolsToml;
 use codex_config::config_toml::UnifiedExecToml;
 use codex_config::loader::project_trust_key;
@@ -412,14 +411,11 @@ enabled = false
 }
 
 #[test]
-fn tools_shell_command_and_unified_exec_config_deserializes() {
+fn tools_unified_exec_config_deserializes() {
     let cfg: ConfigToml = toml::from_str(
         r#"
-[tools.shell_command]
-log_macos_seatbelt_denials = true
-
 [tools.unified_exec]
-log_macos_seatbelt_denials = false
+log_macos_seatbelt_denials = true
 "#,
     )
     .expect("TOML deserialization should succeed");
@@ -427,11 +423,8 @@ log_macos_seatbelt_denials = false
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
-            shell_command: Some(ShellCommandToml {
-                log_macos_seatbelt_denials: Some(true),
-            }),
             unified_exec: Some(UnifiedExecToml {
-                log_macos_seatbelt_denials: Some(false),
+                log_macos_seatbelt_denials: Some(true),
             }),
             ..Default::default()
         })
@@ -439,34 +432,21 @@ log_macos_seatbelt_denials = false
 }
 
 #[test]
-fn tool_runtime_configs_default_to_false() {
+fn unified_exec_runtime_config_defaults_to_false() {
     let cfg = ConfigToml {
         tools: Some(ToolsToml {
-            shell_command: Some(ShellCommandToml {
-                log_macos_seatbelt_denials: Some(true),
-            }),
             unified_exec: Some(UnifiedExecToml {
-                log_macos_seatbelt_denials: Some(false),
+                log_macos_seatbelt_denials: Some(true),
             }),
             ..Default::default()
         }),
         ..Default::default()
     };
     assert_eq!(
-        resolve_shell_command_config(&cfg),
-        ShellCommandConfig {
-            log_macos_seatbelt_denials: true,
-        }
-    );
-    assert_eq!(
         resolve_unified_exec_config(&cfg),
         UnifiedExecConfig {
-            log_macos_seatbelt_denials: false,
+            log_macos_seatbelt_denials: true,
         }
-    );
-    assert_eq!(
-        resolve_shell_command_config(&ConfigToml::default()),
-        ShellCommandConfig::default(),
     );
     assert_eq!(
         resolve_unified_exec_config(&ConfigToml::default()),

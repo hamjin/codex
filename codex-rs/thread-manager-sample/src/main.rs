@@ -272,7 +272,6 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         experimental_request_user_input_enabled: true,
         code_mode: Default::default(),
         use_experimental_unified_exec_tool: false,
-        shell_command: Default::default(),
         unified_exec: Default::default(),
         background_terminal_max_timeout: 300_000,
         ghost_snapshot: GhostSnapshotConfig::default(),
