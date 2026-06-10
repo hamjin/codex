@@ -73,6 +73,10 @@ impl NoiseChannelPublicKey {
         }
     }
 
+    /// Validate the suite tag and decode both public components for Clatter.
+    ///
+    /// Registry JSON is an external boundary, so parsing rejects malformed
+    /// base64 and wrong lengths before either value reaches the handshake.
     fn decode(
         &self,
     ) -> Result<(<X25519 as Dh>::PubKey, <AwsLcMlKem768 as Kem>::PubKey), NoiseChannelError> {
@@ -132,6 +136,10 @@ impl NoiseChannelIdentity {
     }
 }
 
+/// Harness-side state between the first and second hybrid-IK messages.
+///
+/// This value is single-use: [`Self::finish`] consumes it so the same handshake
+/// state cannot be finalized twice or reused for another relay stream.
 pub(crate) struct InitiatorHandshake {
     handshake: Handshake,
 }
@@ -183,6 +191,11 @@ impl InitiatorHandshake {
     }
 }
 
+/// Established encrypted channel with independent implicit send/receive nonces.
+///
+/// Noise does not transmit these counters. Callers must therefore present
+/// ciphertext records in order and must never re-encrypt a logical record as a
+/// retry; either mistake would move one endpoint to a different nonce.
 pub(crate) struct NoiseTransport {
     transport: Transport,
 }
