@@ -151,7 +151,7 @@ fn attach_plugin_script(
         }
         Err(err) => {
             if let Some(plugin_script) = plugin_script.as_ref() {
-                plugin_script.finish(None, /*failed*/ true);
+                plugin_script.finish(/*exit_code*/ None, /*failed*/ true);
             }
             Err(err)
         }

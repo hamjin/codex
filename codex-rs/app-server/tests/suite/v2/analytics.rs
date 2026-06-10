@@ -131,6 +131,7 @@ pub(crate) async fn wait_for_analytics_event(
     .await
 }
 
+#[cfg(unix)]
 pub(crate) async fn wait_for_analytics_events(
     server: &MockServer,
     read_timeout: Duration,

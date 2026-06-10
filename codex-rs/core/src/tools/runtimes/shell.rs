@@ -322,7 +322,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
                         plugin_script.mark_cancelled();
                     }
                     if let Some(plugin_script) = plugin_script.as_ref() {
-                        plugin_script.finish(None, /*failed*/ true);
+                        plugin_script.finish(/*exit_code*/ None, /*failed*/ true);
                     }
                     return Err(err);
                 }
@@ -368,7 +368,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             }
             Err(err) => {
                 if let Some(plugin_script) = plugin_script.as_ref() {
-                    plugin_script.finish(None, /*failed*/ true);
+                    plugin_script.finish(/*exit_code*/ None, /*failed*/ true);
                 }
                 Err(ToolError::Codex(err))
             }

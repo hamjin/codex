@@ -139,7 +139,7 @@ enabled = true
         &server,
         DEFAULT_READ_TIMEOUT,
         "codex_plugin_lifecycle_event",
-        2,
+        /*expected_count*/ 2,
     )
     .await?;
     let started = event_with_status(&events, "started")?;
@@ -173,7 +173,7 @@ enabled = true
 
 #[tokio::test]
 async fn plugin_script_emits_failed_lifecycle_analytics() -> Result<()> {
-    let events = run_terminal_lifecycle_fixture("exit 7\n", false).await?;
+    let events = run_terminal_lifecycle_fixture("exit 7\n", /*interrupt*/ false).await?;
     assert_eq!(events.len(), 2);
 
     let started = event_with_status(&events, "started")?;
@@ -189,7 +189,7 @@ async fn plugin_script_emits_failed_lifecycle_analytics() -> Result<()> {
 
 #[tokio::test]
 async fn interrupted_plugin_script_emits_one_cancelled_lifecycle_event() -> Result<()> {
-    let events = run_terminal_lifecycle_fixture("sleep 30\n", true).await?;
+    let events = run_terminal_lifecycle_fixture("sleep 30\n", /*interrupt*/ true).await?;
     assert_eq!(events.len(), 2);
 
     let started = event_with_status(&events, "started")?;
@@ -304,7 +304,7 @@ enabled = true
             &server,
             DEFAULT_READ_TIMEOUT,
             "codex_plugin_lifecycle_event",
-            1,
+            /*expected_count*/ 1,
         )
         .await?;
         let interrupt_request = mcp
@@ -331,7 +331,7 @@ enabled = true
         &server,
         DEFAULT_READ_TIMEOUT,
         "codex_plugin_lifecycle_event",
-        2,
+        /*expected_count*/ 2,
     )
     .await?;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -339,7 +339,7 @@ enabled = true
         &server,
         DEFAULT_READ_TIMEOUT,
         "codex_plugin_lifecycle_event",
-        2,
+        /*expected_count*/ 2,
     )
     .await
 }

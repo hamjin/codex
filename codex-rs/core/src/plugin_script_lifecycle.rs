@@ -497,7 +497,7 @@ fn has_unquoted_compound_operator(command: &str) -> bool {
     quote.is_some() || escaped
 }
 
-#[cfg(any(not(windows), test))]
+#[cfg(not(windows))]
 fn is_env_assignment(token: &str) -> bool {
     let Some((name, _)) = token.split_once('=') else {
         return false;
