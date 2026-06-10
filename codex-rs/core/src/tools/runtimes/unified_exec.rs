@@ -125,6 +125,23 @@ impl SpawnLifecycle for PluginScriptSpawnLifecycle {
         self.inner.after_spawn();
         self.plugin_script.mark_started();
     }
+
+    fn mark_cancelled(&self) {
+        self.inner.mark_cancelled();
+        self.plugin_script.mark_cancelled();
+    }
+
+    fn finish(&self, exit_code: Option<i32>, failed: bool) {
+        self.inner.finish(exit_code, failed);
+        self.plugin_script.finish(exit_code, failed);
+    }
+}
+
+impl Drop for PluginScriptSpawnLifecycle {
+    fn drop(&mut self) {
+        self.plugin_script
+            .finish(/*exit_code*/ None, /*failed*/ true);
+    }
 }
 
 fn wrap_spawn_lifecycle(
@@ -137,24 +154,6 @@ fn wrap_spawn_lifecycle(
             plugin_script: Arc::clone(plugin_script),
         }),
         None => inner,
-    }
-}
-
-fn attach_plugin_script(
-    result: Result<UnifiedExecProcess, UnifiedExecError>,
-    plugin_script: Option<Arc<PluginScriptExecution>>,
-) -> Result<UnifiedExecProcess, UnifiedExecError> {
-    match result {
-        Ok(mut process) => {
-            process.set_plugin_script_lifecycle(plugin_script);
-            Ok(process)
-        }
-        Err(err) => {
-            if let Some(plugin_script) = plugin_script.as_ref() {
-                plugin_script.finish(/*exit_code*/ None, /*failed*/ true);
-            }
-            Err(err)
-        }
     }
 }
 
@@ -327,6 +326,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             ctx.turn.as_ref(),
             &req.hook_command,
             &req.cwd,
+            req.shell_type,
         );
         let base_command = &req.command;
         let session_shell = ctx.session.user_shell();
@@ -414,7 +414,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                                 .to_string(),
                         ));
                     }
-                    let result = self
+                    return self
                         .manager
                         .open_session_with_exec_env(
                             req.process_id,
@@ -423,16 +423,16 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                             wrap_spawn_lifecycle(prepared.spawn_lifecycle, plugin_script.as_ref()),
                             req.environment.as_ref(),
                         )
-                        .await;
-                    return attach_plugin_script(result, plugin_script).map_err(|err| match err {
-                        UnifiedExecError::SandboxDenied { output, .. } => {
-                            ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
-                                output: Box::new(output),
-                                network_policy_decision: None,
-                            }))
-                        }
-                        other => ToolError::Rejected(other.to_string()),
-                    });
+                        .await
+                        .map_err(|err| match err {
+                            UnifiedExecError::SandboxDenied { output, .. } => {
+                                ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+                                    output: Box::new(output),
+                                    network_policy_decision: None,
+                                }))
+                            }
+                            other => ToolError::Rejected(other.to_string()),
+                        });
                 }
                 None => {
                     tracing::warn!(
@@ -451,8 +451,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
         exec_env.exec_server_env_config = req.exec_server_env_config.clone();
         let spawn_lifecycle =
             wrap_spawn_lifecycle(Box::new(NoopSpawnLifecycle), plugin_script.as_ref());
-        let result = self
-            .manager
+        self.manager
             .open_session_with_exec_env(
                 req.process_id,
                 &exec_env,
@@ -460,16 +459,16 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                 spawn_lifecycle,
                 req.environment.as_ref(),
             )
-            .await;
-        attach_plugin_script(result, plugin_script).map_err(|err| match err {
-            UnifiedExecError::SandboxDenied { output, .. } => {
-                ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
-                    output: Box::new(output),
-                    network_policy_decision: None,
-                }))
-            }
-            other => ToolError::Rejected(other.to_string()),
-        })
+            .await
+            .map_err(|err| match err {
+                UnifiedExecError::SandboxDenied { output, .. } => {
+                    ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+                        output: Box::new(output),
+                        network_policy_decision: None,
+                    }))
+                }
+                other => ToolError::Rejected(other.to_string()),
+            })
     }
 }
 

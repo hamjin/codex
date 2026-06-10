@@ -465,7 +465,6 @@ impl UnifiedExecProcessManager {
             .as_ref()
             .is_some_and(DeferredNetworkApproval::is_cancelled)
         {
-            process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
             let message = network_denial_message_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
@@ -505,8 +504,6 @@ impl UnifiedExecProcessManager {
             .await;
             self.release_process_id(request.process_id).await;
             if let Err(message) = finish_result {
-                process
-                    .finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
                 return Err(fail_process_with_message(process.as_ref(), message));
             }
             return Err(UnifiedExecError::process_failed(message));
@@ -689,7 +686,6 @@ impl UnifiedExecProcessManager {
             .as_ref()
             .is_some_and(DeferredNetworkApproval::is_cancelled)
         {
-            process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
             let message =
                 network_denial_message_for_session(session.as_ref(), network_approval.clone())
                     .await;
@@ -975,7 +971,12 @@ impl UnifiedExecProcessManager {
                 .await
                 .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_exec_server_started(started, request.sandbox).await;
+            return UnifiedExecProcess::from_exec_server_started(
+                started,
+                request.sandbox,
+                spawn_lifecycle,
+            )
+            .await;
         }
 
         let (program, args) = request

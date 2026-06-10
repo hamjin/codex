@@ -31,7 +31,6 @@ use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::head_tail_buffer::HeadTailBuffer;
 use super::process_state::ProcessState;
-use crate::plugin_script_lifecycle::PluginScriptExecution;
 
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
 pub(crate) trait SpawnLifecycle: std::fmt::Debug + Send + Sync {
@@ -45,6 +44,10 @@ pub(crate) trait SpawnLifecycle: std::fmt::Debug + Send + Sync {
     }
 
     fn after_spawn(&mut self) {}
+
+    fn mark_cancelled(&self) {}
+
+    fn finish(&self, _exit_code: Option<i32>, _failed: bool) {}
 }
 
 pub(crate) type SpawnLifecycleHandle = Box<dyn SpawnLifecycle>;
@@ -86,8 +89,7 @@ pub(crate) struct UnifiedExecProcess {
     state_rx: watch::Receiver<ProcessState>,
     output_task: Option<JoinHandle<()>>,
     sandbox_type: SandboxType,
-    _spawn_lifecycle: Option<SpawnLifecycleHandle>,
-    plugin_script_lifecycle: Option<Arc<PluginScriptExecution>>,
+    spawn_lifecycle: Option<SpawnLifecycleHandle>,
 }
 
 impl std::fmt::Debug for UnifiedExecProcess {
@@ -128,27 +130,19 @@ impl UnifiedExecProcess {
             state_rx,
             output_task: None,
             sandbox_type,
-            _spawn_lifecycle: spawn_lifecycle,
-            plugin_script_lifecycle: None,
+            spawn_lifecycle,
         }
     }
 
-    pub(crate) fn set_plugin_script_lifecycle(
-        &mut self,
-        plugin_script_lifecycle: Option<Arc<PluginScriptExecution>>,
-    ) {
-        self.plugin_script_lifecycle = plugin_script_lifecycle;
-    }
-
     pub(super) fn mark_plugin_script_cancelled(&self) {
-        if let Some(plugin_script_lifecycle) = self.plugin_script_lifecycle.as_ref() {
-            plugin_script_lifecycle.mark_cancelled();
+        if let Some(spawn_lifecycle) = self.spawn_lifecycle.as_ref() {
+            spawn_lifecycle.mark_cancelled();
         }
     }
 
     pub(super) fn finish_plugin_script_lifecycle(&self, exit_code: Option<i32>, failed: bool) {
-        if let Some(plugin_script_lifecycle) = self.plugin_script_lifecycle.as_ref() {
-            plugin_script_lifecycle.finish(exit_code, failed);
+        if let Some(spawn_lifecycle) = self.spawn_lifecycle.as_ref() {
+            spawn_lifecycle.finish(exit_code, failed);
         }
     }
 
@@ -379,9 +373,10 @@ impl UnifiedExecProcess {
     pub(super) async fn from_exec_server_started(
         started: StartedExecProcess,
         sandbox_type: SandboxType,
+        spawn_lifecycle: SpawnLifecycleHandle,
     ) -> Result<Self, UnifiedExecError> {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
-        let mut managed = Self::new(process_handle, sandbox_type, /*spawn_lifecycle*/ None);
+        let mut managed = Self::new(process_handle, sandbox_type, Some(spawn_lifecycle));
         let output_handles = managed.output_handles();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,

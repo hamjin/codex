@@ -632,7 +632,7 @@ async fn load_plugin(
         config_name,
         manifest_name: None,
         manifest_description: None,
-        manifest_developer_name: None,
+        is_first_party: false,
         root,
         enabled: plugin.enabled,
         skill_roots: Vec::new(),
@@ -673,10 +673,13 @@ async fn load_plugin(
         return loaded_plugin;
     };
 
-    loaded_plugin.manifest_developer_name = manifest
-        .interface
-        .as_ref()
-        .and_then(|interface| interface.developer_name.clone());
+    loaded_plugin.is_first_party = loaded_plugin_id.marketplace_name
+        == OPENAI_CURATED_MARKETPLACE_NAME
+        && manifest
+            .interface
+            .as_ref()
+            .and_then(|interface| interface.developer_name.as_deref())
+            == Some("OpenAI");
     let manifest_paths = &manifest.paths;
     match scope {
         PluginLoadScope::AllCapabilities {

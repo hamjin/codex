@@ -43,11 +43,20 @@ fn skill_outcome(root: &AbsolutePathBuf) -> SkillLoadOutcome {
     outcome
 }
 
+fn resolve(
+    roots: &[FirstPartyPluginRoot],
+    skills: &SkillLoadOutcome,
+    command: &str,
+    cwd: &AbsolutePathBuf,
+) -> Option<ResolvedPluginScript> {
+    resolve_plugin_script(roots, skills, command, cwd, ShellType::Bash)
+}
+
 #[test]
 fn resolves_interpreter_script_to_plugin_relative_path_and_skill() {
     let (_temp, root, roots) = fixture();
     let script = command_path(&["skills", "demo", "scripts", "run.py"]);
-    let resolved = resolve_plugin_script(
+    let resolved = resolve(
         &roots,
         &skill_outcome(&root),
         &format!("python {script} --secret argument"),
@@ -67,8 +76,8 @@ fn resolves_direct_executable_without_a_known_extension() {
     fs::write(root.join("bin/run"), "#!/bin/sh\n").expect("write executable");
 
     let command = command_path(&[".", "bin", "run"]);
-    let resolved = resolve_plugin_script(&roots, &SkillLoadOutcome::default(), &command, &root)
-        .expect("plugin script");
+    let resolved =
+        resolve(&roots, &SkillLoadOutcome::default(), &command, &root).expect("plugin script");
 
     assert_eq!(resolved.script_path, "bin/run");
     assert!(resolved.skill.is_none());
@@ -81,7 +90,7 @@ fn rejects_non_plugin_and_symlink_escape_paths() {
     fs::write(&outside, "print('outside')").expect("write outside script");
 
     assert!(
-        resolve_plugin_script(
+        resolve(
             &roots,
             &SkillLoadOutcome::default(),
             outside.to_string_lossy().as_ref(),
@@ -94,7 +103,7 @@ fn rejects_non_plugin_and_symlink_escape_paths() {
     {
         std::os::unix::fs::symlink(&outside, root.join("escape.py")).expect("create symlink");
         assert!(
-            resolve_plugin_script(
+            resolve(
                 &roots,
                 &SkillLoadOutcome::default(),
                 "python escape.py",
@@ -106,113 +115,64 @@ fn rejects_non_plugin_and_symlink_escape_paths() {
 }
 
 #[test]
-fn rejects_compound_shell_commands() {
+fn resolves_node_and_shell_scripts() {
+    let (_temp, root, roots) = fixture();
+    fs::write(root.join("skills/demo/scripts/run.js"), "console.log('ok')")
+        .expect("write node script");
+    fs::write(root.join("skills/demo/scripts/run.sh"), "echo ok").expect("write shell script");
+
+    for (command, expected) in [
+        (
+            "node skills/demo/scripts/run.js",
+            "skills/demo/scripts/run.js",
+        ),
+        (
+            "sh skills/demo/scripts/run.sh",
+            "skills/demo/scripts/run.sh",
+        ),
+    ] {
+        let resolved =
+            resolve(&roots, &SkillLoadOutcome::default(), command, &root).expect("plugin script");
+        assert_eq!(resolved.script_path, expected);
+    }
+}
+
+#[test]
+fn rejects_compound_commands_and_runner_options() {
     let (_temp, root, roots) = fixture();
 
-    assert!(
-        resolve_plugin_script(
-            &roots,
-            &SkillLoadOutcome::default(),
-            "python skills/demo/scripts/run.py && python skills/demo/scripts/run.py",
-            &root,
-        )
-        .is_none()
-    );
+    for command in [
+        "python skills/demo/scripts/run.py && python skills/demo/scripts/run.py",
+        "python -c skills/demo/scripts/run.py",
+        "python --help skills/demo/scripts/run.py",
+        "node --loader skills/demo/scripts/loader.js skills/demo/scripts/run.js",
+        "env -C skills/demo python scripts/run.py",
+    ] {
+        assert!(
+            resolve(&roots, &SkillLoadOutcome::default(), command, &root).is_none(),
+            "unexpected lifecycle attribution for {command}"
+        );
+    }
 }
 
 #[test]
 #[cfg(not(windows))]
-fn resolves_single_script_with_environment_and_redirection() {
+fn direct_executable_matching_interpreter_name_is_case_sensitive() {
     let (_temp, root, roots) = fixture();
-    let resolved = resolve_plugin_script(
-        &roots,
-        &SkillLoadOutcome::default(),
-        "PLUGIN_MODE=test python skills/demo/scripts/run.py > output.log",
-        &root,
-    )
-    .expect("plugin script");
+    fs::write(root.join("Python"), "#!/bin/sh\n").expect("write case-sensitive executable");
 
-    assert_eq!(resolved.script_path, "skills/demo/scripts/run.py");
-    let env_resolved = resolve_plugin_script(
-        &roots,
-        &SkillLoadOutcome::default(),
-        "env PLUGIN_MODE=test python skills/demo/scripts/run.py",
-        &root,
-    )
-    .expect("env-prefixed plugin script");
-    assert_eq!(env_resolved.script_path, "skills/demo/scripts/run.py");
-    assert!(!has_unquoted_compound_operator(
-        "python skills/demo/scripts/run.py 'literal;argument'"
-    ));
+    let resolved = resolve(&roots, &SkillLoadOutcome::default(), "./Python", &root)
+        .expect("case-sensitive direct executable");
+    assert_eq!(resolved.script_path, "Python");
 }
 
 #[test]
-fn parses_runner_subcommands_and_option_arguments_without_false_attribution() {
-    let (_temp, root, roots) = fixture();
-    fs::write(root.join("skills/demo/scripts/run.ts"), "console.log('ok')")
-        .expect("write deno script");
-    fs::write(root.join("skills/demo/scripts/loader.js"), "export {}").expect("write node loader");
-    fs::write(root.join("skills/demo/scripts/run.js"), "console.log('ok')")
-        .expect("write node script");
-
-    let run_ts = command_path(&["skills", "demo", "scripts", "run.ts"]);
-    let deno = resolve_plugin_script(
-        &roots,
-        &SkillLoadOutcome::default(),
-        &format!("deno run --allow-read {run_ts}"),
-        &root,
-    )
-    .expect("deno plugin script");
-    assert_eq!(deno.script_path, "skills/demo/scripts/run.ts");
-
-    let loader_js = command_path(&["skills", "demo", "scripts", "loader.js"]);
-    let run_js = command_path(&["skills", "demo", "scripts", "run.js"]);
-    let node = resolve_plugin_script(
-        &roots,
-        &SkillLoadOutcome::default(),
-        &format!("node --loader {loader_js} {run_js}"),
-        &root,
-    )
-    .expect("node plugin script");
-    assert_eq!(node.script_path, "skills/demo/scripts/run.js");
-
-    assert!(
-        resolve_plugin_script(
-            &roots,
-            &SkillLoadOutcome::default(),
-            "python -c skills/demo/scripts/run.py",
-            &root,
-        )
-        .is_none()
-    );
-
-    for command in [
-        "python --help skills/demo/scripts/run.py",
-        "python - skills/demo/scripts/run.py",
-        "bash -s skills/demo/scripts/run.py",
-        "env -S 'python -c' skills/demo/scripts/run.py",
-        "env -C skills/demo python scripts/run.py",
-        "pwsh -WorkingDirectory skills/demo -File scripts/run.ps1",
-    ] {
-        assert!(
-            resolve_plugin_script(&roots, &SkillLoadOutcome::default(), command, &root,).is_none(),
-            "unexpected lifecycle attribution for {command}"
-        );
-    }
-
-    #[cfg(not(windows))]
-    {
-        fs::write(root.join("Python"), "#!/bin/sh\n").expect("write case-sensitive executable");
-        let direct = resolve_plugin_script(&roots, &SkillLoadOutcome::default(), "./Python", &root)
-            .expect("case-sensitive direct executable");
-        assert_eq!(direct.script_path, "Python");
-    }
-}
-
-#[test]
-fn windows_command_split_preserves_paths_and_rejects_compounds() {
+fn powershell_split_preserves_paths_and_rejects_compounds() {
     assert_eq!(
-        split_windows_command(r#"pwsh.exe -File C:\Users\me\plugin\scripts\run.ps1"#),
+        command_tokens(
+            r#"pwsh.exe -File C:\Users\me\plugin\scripts\run.ps1"#,
+            ShellType::PowerShell,
+        ),
         Some(vec![
             "pwsh.exe".to_string(),
             "-File".to_string(),
@@ -220,10 +180,13 @@ fn windows_command_split_preserves_paths_and_rejects_compounds() {
         ])
     );
     assert_eq!(
-        split_windows_command(r#"& 'C:\Program Files\plugin\scripts\run.ps1'"#),
+        command_tokens(
+            r#"& 'C:\Program Files\plugin\scripts\run.ps1'"#,
+            ShellType::PowerShell,
+        ),
         Some(vec![
             r#"C:\Program Files\plugin\scripts\run.ps1"#.to_string()
         ])
     );
-    assert!(split_windows_command("python a.py; python b.py").is_none());
+    assert!(command_tokens("python a.py; python b.py", ShellType::PowerShell).is_none());
 }

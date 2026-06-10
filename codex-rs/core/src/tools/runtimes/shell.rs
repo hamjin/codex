@@ -91,6 +91,23 @@ pub struct ShellRuntime {
     backend: ShellRuntimeBackend,
 }
 
+fn finish_plugin_script(
+    result: Result<ExecToolCallOutput, ToolError>,
+    plugin_script: Option<&Arc<PluginScriptExecution>>,
+    cancelled: bool,
+) -> Result<ExecToolCallOutput, ToolError> {
+    if let Some(execution) = plugin_script {
+        if cancelled {
+            execution.mark_cancelled();
+        }
+        match &result {
+            Ok(out) => execution.finish(Some(out.exit_code), out.timed_out),
+            Err(_) => execution.finish(/*exit_code*/ None, /*failed*/ true),
+        }
+    }
+    result
+}
+
 #[derive(serde::Serialize, Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct ApprovalKey {
     command: Vec<String>,
@@ -241,13 +258,14 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
+        let session_shell = ctx.session.user_shell();
         let plugin_script = PluginScriptExecution::resolve(
             ctx.session.as_ref(),
             ctx.turn.as_ref(),
             &req.hook_command,
             &req.cwd,
+            req.shell_type.unwrap_or(session_shell.shell_type),
         );
-        let session_shell = ctx.session.user_shell();
         let (file_system_sandbox_policy, _) = attempt.permissions.to_runtime_permissions();
         let sandbox_permissions = sandbox_permissions_preserving_denied_reads(
             req.sandbox_permissions,
@@ -305,26 +323,18 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             .await
             {
                 Ok(Some(out)) => {
-                    if req.cancellation_token.is_cancelled()
-                        && let Some(plugin_script) = plugin_script.as_ref()
-                    {
-                        plugin_script.mark_cancelled();
-                    }
-                    if let Some(plugin_script) = plugin_script.as_ref() {
-                        plugin_script.finish(Some(out.exit_code), out.timed_out);
-                    }
-                    return Ok(out);
+                    return finish_plugin_script(
+                        Ok(out),
+                        plugin_script.as_ref(),
+                        req.cancellation_token.is_cancelled(),
+                    );
                 }
                 Err(err) => {
-                    if req.cancellation_token.is_cancelled()
-                        && let Some(plugin_script) = plugin_script.as_ref()
-                    {
-                        plugin_script.mark_cancelled();
-                    }
-                    if let Some(plugin_script) = plugin_script.as_ref() {
-                        plugin_script.finish(/*exit_code*/ None, /*failed*/ true);
-                    }
-                    return Err(err);
+                    return finish_plugin_script(
+                        Err(err),
+                        plugin_script.as_ref(),
+                        req.cancellation_token.is_cancelled(),
+                    );
                 }
                 Ok(None) => {
                     tracing::warn!(
@@ -353,25 +363,13 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             Box::new(move || plugin_script.mark_started()) as Box<dyn FnOnce() + Send>
         });
         let result =
-            execute_exec_request_with_after_spawn(env, Self::stdout_stream(ctx), after_spawn).await;
-        if req.cancellation_token.is_cancelled()
-            && let Some(plugin_script) = plugin_script.as_ref()
-        {
-            plugin_script.mark_cancelled();
-        }
-        match result {
-            Ok(out) => {
-                if let Some(plugin_script) = plugin_script.as_ref() {
-                    plugin_script.finish(Some(out.exit_code), out.timed_out);
-                }
-                Ok(out)
-            }
-            Err(err) => {
-                if let Some(plugin_script) = plugin_script.as_ref() {
-                    plugin_script.finish(/*exit_code*/ None, /*failed*/ true);
-                }
-                Err(ToolError::Codex(err))
-            }
-        }
+            execute_exec_request_with_after_spawn(env, Self::stdout_stream(ctx), after_spawn)
+                .await
+                .map_err(ToolError::Codex);
+        finish_plugin_script(
+            result,
+            plugin_script.as_ref(),
+            req.cancellation_token.is_cancelled(),
+        )
     }
 }

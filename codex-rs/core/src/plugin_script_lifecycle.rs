@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::shell::ShellType;
 use crate::skills::SkillLoadOutcome;
 
 #[derive(Debug)]
@@ -44,6 +45,7 @@ impl PluginScriptExecution {
         turn: &TurnContext,
         command: &str,
         cwd: &AbsolutePathBuf,
+        shell_type: ShellType,
     ) -> Option<Arc<Self>> {
         if !turn
             .features
@@ -57,6 +59,7 @@ impl PluginScriptExecution {
             &turn.turn_skills.outcome,
             command,
             cwd,
+            shell_type,
         )?;
 
         Some(Arc::new(Self {
@@ -121,8 +124,9 @@ fn resolve_plugin_script(
     skills_outcome: &SkillLoadOutcome,
     command: &str,
     cwd: &AbsolutePathBuf,
+    shell_type: ShellType,
 ) -> Option<ResolvedPluginScript> {
-    let script_token = script_token(command)?;
+    let script_token = script_token(command, shell_type)?;
     let script_path = Path::new(&script_token);
     let script_path = if script_path.is_absolute() {
         AbsolutePathBuf::try_from(script_path).ok()?
@@ -170,59 +174,37 @@ fn skill_for_script(
     })
 }
 
-fn script_token(command: &str) -> Option<String> {
-    let tokens = command_tokens(command)?;
+fn script_token(command: &str, shell_type: ShellType) -> Option<String> {
+    let tokens = command_tokens(command, shell_type)?;
     let program = tokens.first()?;
     let basename = Path::new(program)
         .file_name()
-        .and_then(|name| name.to_str())?;
-    #[cfg(windows)]
-    let basename = basename.to_ascii_lowercase();
-    #[cfg(windows)]
-    let basename = basename.strip_suffix(".exe").unwrap_or(&basename);
+        .and_then(|name| name.to_str())?
+        .to_string();
+    let windows_shell = matches!(shell_type, ShellType::PowerShell | ShellType::Cmd);
+    let basename = if windows_shell {
+        basename.to_ascii_lowercase()
+    } else {
+        basename
+    };
+    let basename = if windows_shell {
+        basename.strip_suffix(".exe").unwrap_or(&basename)
+    } else {
+        &basename
+    };
     let args = &tokens[1..];
     let runner_script = match basename {
-        "python" | "python3" => script_after_options(
-            args,
-            &["-W", "-X", "--check-hash-based-pycs"],
-            &["-", "-c", "-m", "-h", "--help", "-V", "--version"],
-        ),
-        "bash" | "zsh" | "sh" => script_after_options(
-            args,
-            &["-o", "--rcfile", "--init-file"],
-            &["-c", "-s", "--help", "--version"],
-        ),
-        "node" => script_after_options(
-            args,
-            &[
-                "-r",
-                "--require",
-                "--loader",
-                "--experimental-loader",
-                "--import",
-                "--conditions",
-                "--env-file",
-                "--input-type",
-                "--inspect-port",
-                "--title",
-            ],
-            &[
-                "-c",
-                "--check",
-                "-e",
-                "--eval",
-                "-p",
-                "--print",
-                "-h",
-                "--help",
-                "-v",
-                "--version",
-            ],
-        ),
-        "deno" => deno_script(args),
-        "ruby" => script_after_options(args, &["-I", "-r"], &["-e", "--eval"]),
-        "perl" => script_after_options(args, &["-I", "-M", "-m"], &["-e", "-E"]),
-        "pwsh" | "powershell" => powershell_script(args),
+        "python" | "python3" | "node" | "bash" | "zsh" | "sh" => {
+            args.first().filter(|arg| !arg.starts_with('-')).cloned()
+        }
+        "pwsh" | "powershell" => match args {
+            [option, script, ..]
+                if matches!(option.to_ascii_lowercase().as_str(), "-file" | "-f") =>
+            {
+                Some(script.clone())
+            }
+            _ => None,
+        },
         _ => None,
     };
     if runner_script.is_some() {
@@ -230,17 +212,7 @@ fn script_token(command: &str) -> Option<String> {
     }
     if matches!(
         basename,
-        "python"
-            | "python3"
-            | "bash"
-            | "zsh"
-            | "sh"
-            | "node"
-            | "deno"
-            | "ruby"
-            | "perl"
-            | "pwsh"
-            | "powershell"
+        "python" | "python3" | "bash" | "zsh" | "sh" | "node" | "pwsh" | "powershell"
     ) {
         return None;
     }
@@ -249,155 +221,25 @@ fn script_token(command: &str) -> Option<String> {
     (path.is_absolute() || program.contains('/') || program.contains('\\')).then(|| program.clone())
 }
 
-fn script_after_options(
-    args: &[String],
-    options_with_values: &[&str],
-    no_script_options: &[&str],
-) -> Option<String> {
-    let mut index = 0;
-    while let Some(arg) = args.get(index) {
-        if arg == "--" {
-            return args.get(index + 1).cloned();
-        }
-        if no_script_options.iter().any(|option| {
-            arg == option
-                || (option.starts_with("--") && arg.starts_with(&format!("{option}=")))
-                || (option.len() == 2 && arg.starts_with(option) && arg.len() > option.len())
-        }) {
-            return None;
-        }
-        if options_with_values.contains(&arg.as_str()) {
-            index += 2;
-            continue;
-        }
-        if arg.starts_with('-') {
-            index += 1;
-            continue;
-        }
-        return Some(arg.clone());
-    }
-    None
-}
-
-fn deno_script(args: &[String]) -> Option<String> {
-    let mut index = 0;
-    while let Some(arg) = args.get(index) {
-        let lower = arg.to_ascii_lowercase();
-        if matches!(lower.as_str(), "--config" | "--import-map" | "--location") {
-            index += 2;
-            continue;
-        }
-        if arg.starts_with('-') {
-            index += 1;
-            continue;
-        }
-        if !matches!(lower.as_str(), "run" | "test" | "bench") {
-            return None;
-        }
-        return script_after_options(
-            &args[index + 1..],
-            &[
-                "--config",
-                "--import-map",
-                "--location",
-                "--seed",
-                "--v8-flags",
-            ],
-            &[],
-        );
-    }
-    None
-}
-
-fn powershell_script(args: &[String]) -> Option<String> {
-    let mut index = 0;
-    while let Some(arg) = args.get(index) {
-        let lower = arg.to_ascii_lowercase();
-        if matches!(lower.as_str(), "-command" | "-c" | "-encodedcommand" | "-e") {
-            return None;
-        }
-        if matches!(lower.as_str(), "-file" | "-f") {
-            return args.get(index + 1).cloned();
-        }
-        if lower == "-workingdirectory" || lower.starts_with("-workingdirectory:") {
-            return None;
-        }
-        if matches!(
-            lower.as_str(),
-            "-executionpolicy" | "-inputformat" | "-outputformat" | "-windowstyle"
-        ) {
-            index += 2;
-            continue;
-        }
-        if arg.starts_with('-') {
-            index += 1;
-            continue;
-        }
-        return Some(arg.clone());
-    }
-    None
-}
-
-#[cfg(not(windows))]
-fn command_tokens(command: &str) -> Option<Vec<String>> {
-    if has_unquoted_compound_operator(command) {
-        return None;
-    }
-    let mut tokens = shlex::split(command)?;
-    while tokens.first().is_some_and(|token| is_env_assignment(token)) {
-        tokens.remove(0);
-    }
-    if tokens.first().is_some_and(|token| {
-        Path::new(token)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "env")
-    }) {
-        tokens.remove(0);
-        while let Some(token) = tokens.first() {
-            if is_env_assignment(token)
-                || matches!(
-                    token.as_str(),
-                    "-i" | "--ignore-environment" | "-0" | "--null"
-                )
-            {
-                tokens.remove(0);
-            } else if matches!(token.as_str(), "-u" | "--unset") {
-                if tokens.len() < 2 {
-                    return None;
-                }
-                tokens.drain(..2);
-            } else if matches!(token.as_str(), "-C" | "--chdir" | "-S" | "--split-string")
-                || token.starts_with("--chdir=")
-                || token.starts_with("--split-string=")
-                || (token.starts_with("-C") && token.len() > 2)
-                || (token.starts_with("-S") && token.len() > 2)
-            {
-                // These options change how subsequent tokens are parsed or
-                // resolved. Skip lifecycle attribution rather than guess.
+fn command_tokens(command: &str, shell_type: ShellType) -> Option<Vec<String>> {
+    match shell_type {
+        ShellType::Bash | ShellType::Sh | ShellType::Zsh => {
+            let tree = codex_shell_command::bash::try_parse_shell(command)?;
+            let mut commands =
+                codex_shell_command::bash::try_parse_word_only_commands_sequence(&tree, command)?;
+            let [tokens] = commands.as_mut_slice() else {
                 return None;
-            } else if token == "--" {
-                tokens.remove(0);
-                break;
-            } else if token.starts_with('-') {
-                return None;
-            } else {
-                break;
-            }
+            };
+            Some(std::mem::take(tokens))
         }
+        ShellType::PowerShell => split_windows_command(command),
+        ShellType::Cmd => None,
     }
-    (!tokens.is_empty()).then_some(tokens)
-}
-
-#[cfg(windows)]
-fn command_tokens(command: &str) -> Option<Vec<String>> {
-    split_windows_command(command)
 }
 
 /// Splits one plain PowerShell-style command without treating backslashes as
 /// escapes. Compound commands are rejected because lifecycle events attach to
 /// the spawned shell process and cannot represent multiple child scripts.
-#[cfg(any(windows, test))]
 fn split_windows_command(command: &str) -> Option<Vec<String>> {
     let mut chars = command.chars().peekable();
     let mut tokens = Vec::new();
@@ -457,56 +299,6 @@ fn split_windows_command(command: &str) -> Option<Vec<String>> {
         tokens.push(token);
     }
     (!tokens.is_empty()).then_some(tokens)
-}
-
-#[cfg(not(windows))]
-fn has_unquoted_compound_operator(command: &str) -> bool {
-    let mut chars = command.chars().peekable();
-    let mut quote = None;
-    let mut escaped = false;
-    let mut previous_non_whitespace = None;
-
-    while let Some(ch) = chars.next() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if let Some(active_quote) = quote {
-            if active_quote == '"' && ch == '\\' {
-                escaped = true;
-            } else if ch == active_quote {
-                quote = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '\'' | '"' => quote = Some(ch),
-            '\\' => escaped = true,
-            '|' | ';' | '\r' | '\n' => return true,
-            '&' if previous_non_whitespace != Some('>') && chars.peek().copied() != Some('>') => {
-                return true;
-            }
-            _ => {}
-        }
-        if !ch.is_whitespace() {
-            previous_non_whitespace = Some(ch);
-        }
-    }
-
-    quote.is_some() || escaped
-}
-
-#[cfg(not(windows))]
-fn is_env_assignment(token: &str) -> bool {
-    let Some((name, _)) = token.split_once('=') else {
-        return false;
-    };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn normalized_relative_path(path: &Path) -> String {
