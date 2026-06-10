@@ -440,16 +440,23 @@ impl AgentControl {
             ))
         })?;
 
-        let mut forked_rollout_items = if matches!(fork_mode, SpawnAgentForkMode::FullHistory) {
-            if config.features.enabled(Feature::SessionSegmentation)
-                && let Some(rollout_path) = parent_rollout_path
-            {
-                full_history_rollout_reference_items(rollout_path, &parent_history.items)
-            } else {
-                parent_history.items
+        let mut forked_rollout_items = match fork_mode {
+            SpawnAgentForkMode::FullHistory => {
+                if config.features.enabled(Feature::SessionSegmentation)
+                    && let Some(rollout_path) = parent_rollout_path
+                {
+                    full_history_rollout_reference_items(rollout_path, &parent_history.items)
+                } else {
+                    parent_history.items
+                }
             }
-        } else {
-            parent_history.items
+            SpawnAgentForkMode::LastNTurns(_) => {
+                crate::thread_rollout_truncation::materialize_rollout_items_for_replay(
+                    &config.codex_home,
+                    &parent_history.items,
+                )
+                .await
+            }
         };
         if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
             forked_rollout_items =

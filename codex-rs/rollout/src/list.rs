@@ -1099,8 +1099,63 @@ impl<'a> ProviderMatcher<'a> {
 }
 
 async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTailSummary> {
+    const MAX_SUMMARY_REFERENCE_DEPTH: usize = 8;
+
+    let (mut summary, mut reference) = read_head_summary_file(path, head_limit).await?;
+    let mut referenced_summaries = Vec::new();
+    let mut remaining_depth = MAX_SUMMARY_REFERENCE_DEPTH;
+    while remaining_depth > 0 {
+        let Some(next_reference) = reference.take() else {
+            break;
+        };
+        if next_reference.max_depth == 0 || next_reference.filter_fork_history {
+            break;
+        }
+        let reference_depth = next_reference.max_depth;
+        let Some(reference_path) =
+            compression::existing_rollout_path(next_reference.rollout_path.as_path()).await
+        else {
+            break;
+        };
+        let (referenced_summary, next_reference) =
+            read_head_summary_file(reference_path.as_path(), head_limit).await?;
+        referenced_summaries.push(referenced_summary);
+        reference = next_reference;
+        remaining_depth = remaining_depth
+            .saturating_sub(1)
+            .min(reference_depth.saturating_sub(1));
+    }
+
+    let mut referenced_preview = None;
+    let mut referenced_first_user_message = None;
+    for referenced_summary in referenced_summaries.into_iter().rev() {
+        if referenced_preview.is_none() {
+            referenced_preview = referenced_summary.preview;
+        }
+        if referenced_first_user_message.is_none() {
+            referenced_first_user_message = referenced_summary.first_user_message;
+        }
+        summary.saw_compacted_user_message |= referenced_summary.saw_compacted_user_message;
+    }
+    if let Some(preview) = referenced_preview {
+        summary.preview = Some(preview);
+    }
+    if let Some(first_user_message) = referenced_first_user_message {
+        summary.first_user_message = Some(first_user_message);
+    }
+    Ok(summary)
+}
+
+async fn read_head_summary_file(
+    path: &Path,
+    head_limit: usize,
+) -> io::Result<(
+    HeadTailSummary,
+    Option<codex_protocol::protocol::RolloutReferenceItem>,
+)> {
     let mut lines = compression::open_rollout_line_reader(path).await?;
     let mut summary = HeadTailSummary::default();
+    let mut reference = None;
     let mut lines_scanned = 0usize;
 
     while lines_scanned < head_limit
@@ -1146,8 +1201,10 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
                     summary.saw_session_meta = true;
                 }
             }
-            RolloutItem::RolloutReference(_) => {
-                // Not included in summaries; skip.
+            RolloutItem::RolloutReference(item) => {
+                if reference.is_none() {
+                    reference = Some(item);
+                }
             }
             RolloutItem::ResponseItem(_) => {
                 summary.created_at = summary
@@ -1189,7 +1246,7 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         }
     }
 
-    Ok(summary)
+    Ok((summary, reference))
 }
 
 /// Read up to `HEAD_RECORD_LIMIT` records from the start of the rollout file at `path`.
@@ -1658,13 +1715,12 @@ async fn find_rollout_path_by_segment_id_in_subdir(
             if !file_type.is_file() {
                 continue;
             }
-            let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
+            let Some(rollout_file) = compression::RolloutFile::from_path(path) else {
                 continue;
             };
-            if !file_name.starts_with("rollout-") || !file_name.ends_with(".jsonl") {
-                continue;
-            }
-            let Some((_, uuid)) = parse_timestamp_uuid_from_filename(file_name) else {
+            let Some((_, uuid)) =
+                parse_timestamp_uuid_from_filename(rollout_file.plain_file_name())
+            else {
                 continue;
             };
             if uuid.to_string() != target_thread_id {
@@ -1674,11 +1730,11 @@ async fn find_rollout_path_by_segment_id_in_subdir(
             if scanned_files > MAX_SCAN_FILES {
                 return Ok(None);
             }
-            let Ok(meta_line) = read_session_meta_line(&path).await else {
+            let Ok(meta_line) = read_session_meta_line(rollout_file.path()).await else {
                 continue;
             };
             if meta_line.meta.id == thread_id && meta_line.meta.segment_id == Some(segment_id) {
-                return Ok(Some(path));
+                return Ok(Some(rollout_file.into_path()));
             }
         }
     }

@@ -19,9 +19,13 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::DEFAULT_ROLLOUT_REFERENCE_DEPTH;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::RolloutReferenceItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
@@ -167,6 +171,22 @@ fn history_contains_text(history_items: &[ResponseItem], needle: &str) -> bool {
             ContentItem::InputImage { .. } => false,
         })
     })
+}
+
+fn write_rollout_items(path: &std::path::Path, items: impl IntoIterator<Item = RolloutItem>) {
+    let mut jsonl = String::new();
+    for item in items {
+        jsonl.push_str(
+            serde_json::to_string(&RolloutLine {
+                timestamp: "2026-06-10T00:00:00Z".to_string(),
+                item,
+            })
+            .expect("serialize rollout")
+            .as_str(),
+        );
+        jsonl.push('\n');
+    }
+    std::fs::write(path, jsonl).expect("write rollout");
 }
 
 fn history_contains_assistant_inter_agent_communication(
@@ -1374,6 +1394,117 @@ async fn spawn_agent_fork_last_n_turns_keeps_only_recent_turns() {
             .await
             .is_none(),
         "last-N forked child should rebuild context after truncating the cached prefix"
+    );
+
+    let _ = harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("child shutdown should submit");
+    let _ = parent_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
+}
+
+#[tokio::test]
+async fn spawn_agent_fork_last_n_turns_materializes_referenced_segments() {
+    Box::pin(spawn_agent_fork_last_n_turns_materializes_referenced_segments_impl()).await;
+}
+
+async fn spawn_agent_fork_last_n_turns_materializes_referenced_segments_impl() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let referenced_path = harness.config.codex_home.join("referenced-parent.jsonl");
+    write_rollout_items(
+        referenced_path.as_path(),
+        [
+            RolloutItem::ResponseItem(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "previous segment task".to_string(),
+                }],
+                phase: None,
+            }),
+            RolloutItem::ResponseItem(assistant_message(
+                "previous segment answer",
+                Some(MessagePhase::FinalAnswer),
+            )),
+        ],
+    );
+    parent_thread
+        .codex
+        .session
+        .persist_rollout_items(&[RolloutItem::RolloutReference(RolloutReferenceItem {
+            rollout_path: referenced_path.to_path_buf(),
+            thread_id: None,
+            rollout_timestamp: None,
+            segment_id: None,
+            max_depth: DEFAULT_ROLLOUT_REFERENCE_DEPTH,
+            nth_user_message: None,
+            filter_fork_history: false,
+            developer_message_filter_texts: None,
+        })])
+        .await;
+    parent_thread
+        .inject_user_message_without_turn("current segment task".to_string())
+        .await;
+    let spawn_turn_context = parent_thread.codex.session.new_default_turn().await;
+    let parent_spawn_call_id = "spawn-call-last-n-referenced".to_string();
+    parent_thread
+        .codex
+        .session
+        .record_conversation_items(
+            spawn_turn_context.as_ref(),
+            &[spawn_agent_call(&parent_spawn_call_id)],
+        )
+        .await;
+    parent_thread
+        .codex
+        .session
+        .ensure_rollout_materialized()
+        .await;
+    parent_thread
+        .codex
+        .session
+        .flush_rollout()
+        .await
+        .expect("parent rollout should flush");
+
+    let child_thread_id = Box::pin(harness.control.spawn_agent_with_metadata(
+        harness.config.clone(),
+        text_input("child task"),
+        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        })),
+        SpawnAgentOptions {
+            fork_parent_spawn_call_id: Some(parent_spawn_call_id),
+            fork_mode: Some(SpawnAgentForkMode::LastNTurns(2)),
+            ..Default::default()
+        },
+    ))
+    .await
+    .expect("forked spawn should materialize referenced parent turns")
+    .thread_id;
+
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be registered");
+    let history = child_thread.codex.session.clone_history().await;
+    assert!(
+        history_contains_text(history.raw_items(), "previous segment task"),
+        "last-N fork should include turns from referenced segments"
+    );
+    assert!(
+        history_contains_text(history.raw_items(), "current segment task"),
+        "last-N fork should include turns from the current segment"
     );
 
     let _ = harness
