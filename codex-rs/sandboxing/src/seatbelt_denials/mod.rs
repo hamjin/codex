@@ -31,6 +31,13 @@ pub struct SandboxDenial {
     pub capability: String,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LoggedDenial {
+    pid: i32,
+    denial: SandboxDenial,
+}
+
 /// Best-effort collector for macOS Seatbelt denials emitted by a process tree.
 pub struct DenialLogger {
     #[cfg(target_os = "macos")]
@@ -38,15 +45,26 @@ pub struct DenialLogger {
     #[cfg(target_os = "macos")]
     pid_tracker: Option<PidTracker>,
     #[cfg(target_os = "macos")]
-    log_reader: Option<JoinHandle<String>>,
+    log_reader: JoinHandle<VecDeque<LoggedDenial>>,
     #[cfg(target_os = "macos")]
-    stderr_reader: Option<JoinHandle<()>>,
+    stderr_reader: JoinHandle<()>,
 }
 
 impl DenialLogger {
     /// Starts collecting Seatbelt denial log messages.
     #[cfg(target_os = "macos")]
     pub async fn new() -> Option<Self> {
+        Self::new_with_limit(/*max_chars*/ None).await
+    }
+
+    /// Starts collecting Seatbelt denials while retaining at most 1,000 characters.
+    #[cfg(target_os = "macos")]
+    pub async fn new_bounded() -> Option<Self> {
+        Self::new_with_limit(Some(MAX_COLLECTED_LOG_CHARS)).await
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn new_with_limit(max_chars: Option<usize>) -> Option<Self> {
         let mut log_stream = start_log_stream()?;
         let stdout = log_stream.stdout.take()?;
         let stderr = log_stream.stderr.take()?;
@@ -54,7 +72,7 @@ impl DenialLogger {
         let stdout_ready_tx = ready_tx.clone();
         let log_reader = tokio::spawn(async move {
             let mut reader = tokio::io::BufReader::new(stdout);
-            let mut log_lines = VecDeque::new();
+            let mut logged_denials = VecDeque::new();
             let mut collected_chars = 0;
             let mut chunk = Vec::new();
             loop {
@@ -63,14 +81,19 @@ impl DenialLogger {
                     Ok(_) => {
                         if chunk.starts_with(LOG_STREAM_READY_PREFIX.as_bytes()) {
                             let _ = stdout_ready_tx.try_send(());
-                        } else {
-                            append_log_line(&mut log_lines, &mut collected_chars, &chunk);
+                        } else if let Some(denial) = parse_log_line(&chunk) {
+                            push_logged_denial(
+                                &mut logged_denials,
+                                &mut collected_chars,
+                                denial,
+                                max_chars,
+                            );
                         }
                         chunk.clear();
                     }
                 }
             }
-            log_lines.into_iter().collect()
+            logged_denials
         });
 
         let stderr_reader = tokio::spawn(async move {
@@ -90,8 +113,7 @@ impl DenialLogger {
 
         let ready = tokio::time::timeout(LOG_STREAM_READY_TIMEOUT, ready_rx.recv())
             .await
-            .is_ok_and(|result| result.is_some())
-            && log_stream.try_wait().ok().flatten().is_none();
+            .is_ok_and(|result| result.is_some());
         if !ready {
             let _ = log_stream.kill().await;
             let _ = log_stream.wait().await;
@@ -103,14 +125,20 @@ impl DenialLogger {
         Some(Self {
             log_stream,
             pid_tracker: None,
-            log_reader: Some(log_reader),
-            stderr_reader: Some(stderr_reader),
+            log_reader,
+            stderr_reader,
         })
     }
 
     /// Returns no logger on platforms without macOS Seatbelt.
     #[cfg(not(target_os = "macos"))]
     pub async fn new() -> Option<Self> {
+        None
+    }
+
+    /// Returns no logger on platforms without macOS Seatbelt.
+    #[cfg(not(target_os = "macos"))]
+    pub async fn new_bounded() -> Option<Self> {
         None
     }
 
@@ -141,28 +169,20 @@ impl DenialLogger {
         }
         let _ = self.log_stream.kill().await;
         let _ = self.log_stream.wait().await;
-        if let Some(handle) = self.stderr_reader.take() {
-            let _ = handle.await;
-        }
+        let _ = self.stderr_reader.await;
 
-        let logs = match self.log_reader.take() {
-            Some(handle) => handle.await.unwrap_or_default(),
-            None => String::new(),
-        };
+        let logged_denials = self.log_reader.await.unwrap_or_default();
         if pid_set.is_empty() {
             return Vec::new();
         }
 
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut denials: Vec<SandboxDenial> = Vec::new();
-        for line in logs.lines() {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
-                && let Some(msg) = json.get("eventMessage").and_then(|v| v.as_str())
-                && let Some((pid, name, capability)) = parse_message(msg)
-                && pid_set.contains(&pid)
-                && seen.insert((name.clone(), capability.clone()))
+        for LoggedDenial { pid, denial } in logged_denials {
+            if pid_set.contains(&pid)
+                && seen.insert((denial.name.clone(), denial.capability.clone()))
             {
-                denials.push(SandboxDenial { name, capability });
+                denials.push(denial);
             }
         }
         denials
@@ -176,20 +196,39 @@ impl DenialLogger {
 }
 
 #[cfg(target_os = "macos")]
-fn append_log_line(log_lines: &mut VecDeque<String>, collected_chars: &mut usize, line: &[u8]) {
-    let line = String::from_utf8_lossy(line).into_owned();
-    let line_chars = line.chars().count();
-    if line_chars > MAX_COLLECTED_LOG_CHARS {
-        return;
-    }
-    while collected_chars.saturating_add(line_chars) > MAX_COLLECTED_LOG_CHARS {
-        let Some(removed) = log_lines.pop_front() else {
+fn push_logged_denial(
+    logged_denials: &mut VecDeque<LoggedDenial>,
+    collected_chars: &mut usize,
+    logged_denial: LoggedDenial,
+    max_chars: Option<usize>,
+) {
+    let denial_chars =
+        logged_denial.denial.name.chars().count() + logged_denial.denial.capability.chars().count();
+    if let Some(max_chars) = max_chars {
+        if denial_chars > max_chars {
             return;
-        };
-        *collected_chars = collected_chars.saturating_sub(removed.chars().count());
+        }
+        while *collected_chars + denial_chars > max_chars {
+            let Some(removed) = logged_denials.pop_front() else {
+                break;
+            };
+            *collected_chars -=
+                removed.denial.name.chars().count() + removed.denial.capability.chars().count();
+        }
+        *collected_chars += denial_chars;
     }
-    *collected_chars += line_chars;
-    log_lines.push_back(line);
+    logged_denials.push_back(logged_denial);
+}
+
+#[cfg(target_os = "macos")]
+fn parse_log_line(line: &[u8]) -> Option<LoggedDenial> {
+    let json = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+    let msg = json.get("eventMessage")?.as_str()?;
+    let (pid, name, capability) = parse_message(msg)?;
+    Some(LoggedDenial {
+        pid,
+        denial: SandboxDenial { name, capability },
+    })
 }
 
 #[cfg(target_os = "macos")]

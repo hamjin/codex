@@ -31,7 +31,6 @@ use std::collections::HashMap;
 pub(crate) struct ExecOptions {
     pub(crate) expiration: ExecExpiration,
     pub(crate) capture_policy: ExecCapturePolicy,
-    pub(crate) log_macos_seatbelt_denials: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -58,7 +57,7 @@ pub struct ExecRequest {
     pub file_system_sandbox_policy: FileSystemSandboxPolicy,
     pub network_sandbox_policy: NetworkSandboxPolicy,
     pub(crate) windows_sandbox_filesystem_overrides: Option<WindowsSandboxFilesystemOverrides>,
-    pub log_macos_seatbelt_denials: bool,
+    pub(crate) log_macos_seatbelt_denials: bool,
     pub arg0: Option<String>,
 }
 
@@ -76,7 +75,6 @@ impl ExecRequest {
         windows_sandbox_level: WindowsSandboxLevel,
         windows_sandbox_private_desktop: bool,
         permission_profile: PermissionProfile,
-        log_macos_seatbelt_denials: bool,
         arg0: Option<String>,
     ) -> Self {
         let windows_sandbox_policy_cwd = cwd.clone();
@@ -99,7 +97,7 @@ impl ExecRequest {
             file_system_sandbox_policy,
             network_sandbox_policy,
             windows_sandbox_filesystem_overrides: None,
-            log_macos_seatbelt_denials,
+            log_macos_seatbelt_denials: false,
             arg0,
         }
     }
@@ -126,7 +124,6 @@ impl ExecRequest {
         let ExecOptions {
             expiration,
             capture_policy,
-            log_macos_seatbelt_denials,
         } = options;
         if !network_sandbox_policy.is_enabled() {
             env.insert(
@@ -155,7 +152,7 @@ impl ExecRequest {
             file_system_sandbox_policy,
             network_sandbox_policy,
             windows_sandbox_filesystem_overrides: None,
-            log_macos_seatbelt_denials,
+            log_macos_seatbelt_denials: false,
             arg0,
         }
     }

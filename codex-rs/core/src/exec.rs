@@ -386,7 +386,6 @@ pub fn build_exec_request(
     let options = ExecOptions {
         expiration,
         capture_policy,
-        log_macos_seatbelt_denials: false,
     };
     let mut exec_req = manager
         .transform(SandboxTransformRequest {
@@ -1027,7 +1026,7 @@ async fn exec(
     })?;
     let arg0_ref = arg0.as_deref();
     let mut denial_logger = if log_macos_seatbelt_denials && sandbox == SandboxType::MacosSeatbelt {
-        DenialLogger::new().await
+        DenialLogger::new_bounded().await
     } else {
         None
     };

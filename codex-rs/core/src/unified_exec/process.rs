@@ -345,7 +345,6 @@ impl UnifiedExecProcess {
             stdout_rx,
             stderr_rx,
             mut exit_rx,
-            child_pid: _,
         } = spawned;
         let output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
         let mut managed = Self::new(
@@ -357,44 +356,46 @@ impl UnifiedExecProcess {
             output_rx,
             Arc::clone(&managed.output_buffer),
             Arc::clone(&managed.output_notify),
-            Arc::clone(&managed.output_closed),
-            Arc::clone(&managed.output_closed_notify),
             managed.output_tx.clone(),
         ));
 
-        match exit_rx.try_recv() {
-            Ok(exit_code) => {
-                managed.append_seatbelt_denials(denial_logger.take()).await;
-                managed.signal_exit(Some(exit_code));
-                managed.check_for_sandbox_denial().await?;
-                return Ok(managed);
-            }
-            Err(TryRecvError::Closed) => {
-                managed.append_seatbelt_denials(denial_logger.take()).await;
-                managed.signal_exit(/*exit_code*/ None);
-                managed.check_for_sandbox_denial().await?;
-                return Ok(managed);
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-
-        if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
-            managed.append_seatbelt_denials(denial_logger.take()).await;
-            managed.signal_exit(exit_result.ok());
-            managed.check_for_sandbox_denial().await?;
+        let immediate_exit = match exit_rx.try_recv() {
+            Ok(exit_code) => Some(Some(exit_code)),
+            Err(TryRecvError::Closed) => Some(None),
+            Err(TryRecvError::Empty) => None,
+        };
+        if let Some(exit_code) = immediate_exit {
+            managed
+                .finish_local_exit(exit_code, denial_logger.take())
+                .await?;
             return Ok(managed);
         }
 
+        if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
+            managed
+                .finish_local_exit(exit_result.ok(), denial_logger.take())
+                .await?;
+            return Ok(managed);
+        }
+
+        let output_task = managed.output_task.take();
         tokio::spawn({
             let state_tx = managed.state_tx.clone();
             let cancellation_token = managed.cancellation_token.clone();
             let output_buffer = Arc::clone(&managed.output_buffer);
             let output_notify = Arc::clone(&managed.output_notify);
             let output_tx = managed.output_tx.clone();
+            let output_closed = Arc::clone(&managed.output_closed);
+            let output_closed_notify = Arc::clone(&managed.output_closed_notify);
             async move {
                 let exit_code = exit_rx.await.ok();
+                if let Some(output_task) = output_task {
+                    let _ = output_task.await;
+                }
                 append_seatbelt_denials(denial_logger, &output_buffer, &output_notify, &output_tx)
                     .await;
+                output_closed.store(true, Ordering::Release);
+                output_closed_notify.notify_waiters();
                 let state = state_tx.borrow().clone();
                 let _ = state_tx.send_replace(state.exited(exit_code));
                 cancellation_token.cancel();
@@ -404,7 +405,14 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
-    async fn append_seatbelt_denials(&self, logger: Option<DenialLogger>) {
+    async fn finish_local_exit(
+        &mut self,
+        exit_code: Option<i32>,
+        logger: Option<DenialLogger>,
+    ) -> Result<(), UnifiedExecError> {
+        if let Some(output_task) = self.output_task.take() {
+            let _ = output_task.await;
+        }
         append_seatbelt_denials(
             logger,
             &self.output_buffer,
@@ -412,6 +420,10 @@ impl UnifiedExecProcess {
             &self.output_tx,
         )
         .await;
+        self.output_closed.store(true, Ordering::Release);
+        self.output_closed_notify.notify_waiters();
+        self.signal_exit(exit_code);
+        self.check_for_sandbox_denial().await
     }
 
     pub(super) async fn from_exec_server_started(
@@ -542,8 +554,6 @@ impl UnifiedExecProcess {
         mut receiver: tokio::sync::broadcast::Receiver<Vec<u8>>,
         buffer: OutputBuffer,
         output_notify: Arc<Notify>,
-        output_closed: Arc<AtomicBool>,
-        output_closed_notify: Arc<Notify>,
         output_tx: broadcast::Sender<Vec<u8>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
@@ -557,11 +567,7 @@ impl UnifiedExecProcess {
                         output_notify.notify_waiters();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        output_closed.store(true, Ordering::Release);
-                        output_closed_notify.notify_waiters();
-                        break;
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
             }
         })

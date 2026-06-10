@@ -460,7 +460,6 @@ async fn run_command(params: RunCommandParams) {
         stdout_rx,
         stderr_rx,
         exit_rx,
-        ..
     } = spawned;
     tokio::pin!(exit_rx);
     let mut expiration_outcome = None;
@@ -708,7 +707,6 @@ mod tests {
             WindowsSandboxLevel::Disabled,
             /*windows_sandbox_private_desktop*/ false,
             PermissionProfile::read_only(),
-            /*log_macos_seatbelt_denials*/ false,
             /*arg0*/ None,
         )
     }
@@ -826,7 +824,6 @@ mod tests {
                     WindowsSandboxLevel::Disabled,
                     /*windows_sandbox_private_desktop*/ false,
                     PermissionProfile::read_only(),
-                    /*log_macos_seatbelt_denials*/ false,
                     /*arg0*/ None,
                 ),
                 started_network_proxy: None,
@@ -917,7 +914,6 @@ mod tests {
                     WindowsSandboxLevel::Disabled,
                     /*windows_sandbox_private_desktop*/ false,
                     PermissionProfile::read_only(),
-                    /*log_macos_seatbelt_denials*/ false,
                     /*arg0*/ None,
                 ),
                 started_network_proxy: None,

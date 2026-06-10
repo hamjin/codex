@@ -3295,7 +3295,7 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.unified_exec.log_macos_seatbelt_denials = true;
+        config.unified_exec_log_macos_seatbelt_denials = true;
         config
             .features
             .enable(Feature::UnifiedExec)
@@ -3342,13 +3342,29 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
     let outputs = collect_tool_outputs(&bodies)?;
     let output = outputs.get(call_id).context("denied touch output")?;
 
+    let command_error = output
+        .output
+        .find("Operation not permitted")
+        .context("missing command error")?;
+    let denial_header = output
+        .output
+        .find("=== Sandbox denials ===")
+        .context("missing denial header")?;
     assert!(
-        output.output.contains("=== Sandbox denials ==="),
-        "expected unified exec output to include macOS sandbox denial details: {output:?}"
+        command_error < denial_header,
+        "expected sandbox denials after command output: {output:?}"
     );
+    let canonical_denied_path = denied_path
+        .parent()
+        .context("denied path parent")?
+        .canonicalize()?
+        .join(denied_path.file_name().context("denied path file name")?);
     assert!(
-        output.output.contains("file-write"),
-        "expected macOS denial details to include the denied capability: {output:?}"
+        output.output.contains(&format!(
+            "file-write-create {}",
+            canonical_denied_path.display()
+        )),
+        "expected macOS denial details for the attempted touch: {output:?}"
     );
     assert!(
         !denied_path.exists(),

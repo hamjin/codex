@@ -990,8 +990,8 @@ pub struct Config {
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
 
-    /// Runtime settings for the model-facing unified exec tools.
-    pub unified_exec: UnifiedExecConfig,
+    /// Whether unified exec appends macOS Seatbelt denials to command output.
+    pub unified_exec_log_macos_seatbelt_denials: bool,
 
     /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
     /// Default: `300000` (5 minutes).
@@ -1108,11 +1108,6 @@ pub enum TerminalResizeReflowMaxRows {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TerminalResizeReflowConfig {
     pub max_rows: TerminalResizeReflowMaxRows,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct UnifiedExecConfig {
-    pub log_macos_seatbelt_denials: bool,
 }
 
 impl AuthManagerConfig for Config {
@@ -2337,17 +2332,13 @@ fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
     }
 }
 
-fn resolve_unified_exec_config(config_toml: &ConfigToml) -> UnifiedExecConfig {
-    let log_macos_seatbelt_denials = config_toml
+fn resolve_unified_exec_log_macos_seatbelt_denials(config_toml: &ConfigToml) -> bool {
+    config_toml
         .tools
         .as_ref()
         .and_then(|tools| tools.unified_exec.as_ref())
         .and_then(|unified_exec| unified_exec.log_macos_seatbelt_denials)
-        .unwrap_or(false);
-
-    UnifiedExecConfig {
-        log_macos_seatbelt_denials,
-    }
+        .unwrap_or(false)
 }
 
 fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config {
@@ -3062,7 +3053,8 @@ impl Config {
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
-        let unified_exec = resolve_unified_exec_config(&cfg);
+        let unified_exec_log_macos_seatbelt_denials =
+            resolve_unified_exec_log_macos_seatbelt_denials(&cfg);
 
         let agent_roles =
             agent_roles::load_agent_roles(fs, &cfg, &config_layer_stack, &mut startup_warnings)
@@ -3595,7 +3587,7 @@ impl Config {
             experimental_request_user_input_enabled,
             code_mode,
             use_experimental_unified_exec_tool,
-            unified_exec,
+            unified_exec_log_macos_seatbelt_denials,
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,

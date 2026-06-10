@@ -90,7 +90,6 @@ fn combine_spawned_output(
         stdout_rx,
         stderr_rx,
         exit_rx,
-        child_pid: _,
     } = spawned;
     (
         session,
@@ -557,7 +556,6 @@ async fn pipe_process_can_expose_split_stdout_and_stderr() -> anyhow::Result<()>
         stdout_rx,
         stderr_rx,
         exit_rx,
-        child_pid: _,
     } = spawned;
 
     let timeout_ms = if cfg!(windows) { 10_000 } else { 2_000 };

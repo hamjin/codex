@@ -995,7 +995,7 @@ impl UnifiedExecProcessManager {
         let mut denial_logger = if request.log_macos_seatbelt_denials
             && request.sandbox == SandboxType::MacosSeatbelt
         {
-            DenialLogger::new().await
+            DenialLogger::new_bounded().await
         } else {
             None
         };
@@ -1028,7 +1028,7 @@ impl UnifiedExecProcessManager {
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
         if let Some(logger) = denial_logger.as_mut() {
-            logger.on_child_pid(spawned.child_pid);
+            logger.on_child_pid(spawned.session.child_pid());
         }
         spawn_lifecycle.after_spawn();
         UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle, denial_logger)

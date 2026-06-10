@@ -494,7 +494,6 @@ async fn run_process(params: RunProcessParams) {
         stdout_rx,
         stderr_rx,
         exit_rx,
-        ..
     } = spawned;
     tokio::pin!(exit_rx);
     let mut expiration_outcome = None;

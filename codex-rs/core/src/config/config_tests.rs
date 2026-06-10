@@ -432,7 +432,7 @@ log_macos_seatbelt_denials = true
 }
 
 #[test]
-fn unified_exec_runtime_config_defaults_to_false() {
+fn unified_exec_denial_logging_defaults_to_false() {
     let cfg = ConfigToml {
         tools: Some(ToolsToml {
             unified_exec: Some(UnifiedExecToml {
@@ -442,16 +442,10 @@ fn unified_exec_runtime_config_defaults_to_false() {
         }),
         ..Default::default()
     };
-    assert_eq!(
-        resolve_unified_exec_config(&cfg),
-        UnifiedExecConfig {
-            log_macos_seatbelt_denials: true,
-        }
-    );
-    assert_eq!(
-        resolve_unified_exec_config(&ConfigToml::default()),
-        UnifiedExecConfig::default(),
-    );
+    assert!(resolve_unified_exec_log_macos_seatbelt_denials(&cfg));
+    assert!(!resolve_unified_exec_log_macos_seatbelt_denials(
+        &ConfigToml::default()
+    ));
 }
 
 #[tokio::test]

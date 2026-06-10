@@ -307,7 +307,6 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         let options = ExecOptions {
             expiration,
             capture_policy: ExecCapturePolicy::ShellTool,
-            log_macos_seatbelt_denials: false,
         };
         let env = attempt
             .env_for(command, options, managed_network)
