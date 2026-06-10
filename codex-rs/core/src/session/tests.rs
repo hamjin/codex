@@ -4822,7 +4822,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
                 config.prefix_mcp_tool_names(),
             ),
         ),
-        mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -6900,7 +6899,6 @@ where
                 config.prefix_mcp_tool_names(),
             ),
         ),
-        mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -7051,8 +7049,6 @@ pub(crate) async fn make_session_and_context_with_rx() -> (
 #[tokio::test]
 async fn refresh_mcp_servers_is_deferred_until_next_turn() {
     let (session, turn_context) = make_session_and_context().await;
-    let old_token = session.mcp_startup_cancellation_token().await;
-    assert!(!old_token.is_cancelled());
 
     let mcp_oauth_credentials_store_mode =
         serde_json::to_value(OAuthCredentialsStoreMode::Auto).expect("serialize store mode");
@@ -7065,7 +7061,6 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
         *guard = Some(refresh_config);
     }
 
-    assert!(!old_token.is_cancelled());
     assert!(
         session
             .pending_mcp_server_refresh_config
@@ -7075,10 +7070,9 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
     );
 
     session
-        .refresh_mcp_servers_if_requested(&turn_context, /*elicitation_reviewer*/ None)
+        .refresh_mcp_servers_if_requested(&turn_context)
         .await;
 
-    assert!(old_token.is_cancelled());
     assert!(
         session
             .pending_mcp_server_refresh_config
@@ -7086,8 +7080,6 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
             .await
             .is_none()
     );
-    let new_token = session.mcp_startup_cancellation_token().await;
-    assert!(!new_token.is_cancelled());
 }
 
 #[tokio::test]

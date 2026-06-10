@@ -17,7 +17,6 @@ use codex_protocol::models::PermissionProfile;
 use codex_tools::DiscoverableTool;
 use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
-use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::config::Config;
@@ -286,7 +285,6 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
     let (tx_event, rx_event) = unbounded();
     drop(rx_event);
 
-    let cancel_token = CancellationToken::new();
     let mcp_connection_manager = McpConnectionManager::new(
         &mcp_servers,
         config.mcp_oauth_credentials_store_mode,
@@ -294,7 +292,6 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
         &config.permissions.approval_policy,
         INITIAL_SUBMIT_ID.to_owned(),
         tx_event,
-        cancel_token.clone(),
         PermissionProfile::default(),
         // Connector discovery is threadless. Use an actually configured env if
         // one exists, but do not reintroduce the old hidden-local fallback.
@@ -362,7 +359,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
         tools = mcp_connection_manager.list_all_tools().await;
     }
     if codex_apps_ready {
-        cancel_token.cancel();
+        mcp_connection_manager.cancel_startup();
     }
 
     let accessible_connectors = codex_connectors::filter::filter_disallowed_connectors(

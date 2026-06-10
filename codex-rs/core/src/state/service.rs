@@ -36,12 +36,10 @@ use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 pub(crate) struct SessionServices {
-    /// The latest manager; callers retain an owned handle while performing MCP I/O.
+    /// The installed manager; callers retain an owned handle while performing MCP I/O.
     pub(crate) mcp_connection_manager: ArcSwap<McpConnectionManager>,
-    pub(crate) mcp_startup_cancellation_token: Mutex<CancellationToken>,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) shell_zsh_path: Option<PathBuf>,

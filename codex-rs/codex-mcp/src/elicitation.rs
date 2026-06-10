@@ -72,6 +72,17 @@ impl ElicitationRequestManager {
         }
     }
 
+    /// Starts an empty responder scope while retaining the current policy and reviewer state.
+    pub(crate) fn new_request_scope(&self) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(HashMap::new())),
+            approval_policy: Arc::clone(&self.approval_policy),
+            permission_profile: Arc::clone(&self.permission_profile),
+            auto_deny: Arc::clone(&self.auto_deny),
+            reviewer: self.reviewer.clone(),
+        }
+    }
+
     pub(crate) fn auto_deny(&self) -> bool {
         self.auto_deny
             .lock()

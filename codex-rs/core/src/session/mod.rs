@@ -63,6 +63,7 @@ use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_login::default_client::originator;
 use codex_mcp::McpConnectionManager;
+use codex_mcp::McpConnectionRefresh;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::codex_apps_tools_cache_key;
 use codex_models_manager::manager::RefreshStrategy;
@@ -3324,7 +3325,7 @@ impl Session {
         let had_active_turn = self.active_turn.lock().await.is_some();
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
         if !had_active_turn {
-            self.cancel_mcp_startup().await;
+            self.cancel_mcp_startup();
         }
     }
 

@@ -320,8 +320,7 @@ async fn handle_approved_mcp_tool_call(
         .services
         .mcp_connection_manager
         .load_full()
-        .server_origin(&server)
-        .map(str::to_string);
+        .server_origin(&server);
 
     let start = Instant::now();
     let rewrite = rewrite_mcp_tool_arguments_for_openai_files(
@@ -1409,9 +1408,7 @@ pub(crate) async fn lookup_mcp_tool_metadata(
     tool_name: &str,
 ) -> Option<McpToolApprovalMetadata> {
     let manager = sess.services.mcp_connection_manager.load_full();
-    let plugin_id = manager
-        .plugin_id_for_mcp_server_name(server)
-        .map(str::to_string);
+    let plugin_id = manager.plugin_id_for_mcp_server_name(server);
     let tools = manager.list_all_tools().await;
     let tool_info = tools
         .into_iter()

@@ -511,7 +511,6 @@ async fn build_skills_and_plugins(
         turn_context,
         cancellation_token,
         &mentioned_skills,
-        Some(sess.mcp_elicitation_reviewer()),
     )
     .await;
 
