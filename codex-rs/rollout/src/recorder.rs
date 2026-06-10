@@ -713,14 +713,16 @@ impl RolloutRecorder {
                 let session_meta = create_session_meta(
                     config,
                     &log_file_info,
-                    forked_from_id,
-                    parent_thread_id,
-                    source,
-                    thread_source,
-                    base_instructions,
-                    dynamic_tools,
-                    multi_agent_version,
-                    /*timestamp_override*/ None,
+                    SessionMetaParams {
+                        forked_from_id,
+                        parent_thread_id,
+                        source,
+                        thread_source,
+                        base_instructions,
+                        dynamic_tools,
+                        multi_agent_version,
+                        timestamp_override: None,
+                    },
                 )?;
 
                 (None, Some(log_file_info), path, Some(session_meta))
@@ -745,14 +747,16 @@ impl RolloutRecorder {
                 let session_meta = create_session_meta(
                     config,
                     &log_file_info,
-                    forked_from_id,
-                    parent_thread_id,
-                    source,
-                    thread_source,
-                    base_instructions,
-                    dynamic_tools,
-                    multi_agent_version,
-                    session_timestamp,
+                    SessionMetaParams {
+                        forked_from_id,
+                        parent_thread_id,
+                        source,
+                        thread_source,
+                        base_instructions,
+                        dynamic_tools,
+                        multi_agent_version,
+                        timestamp_override: session_timestamp,
+                    },
                 )?;
                 (None, Some(log_file_info), path, Some(session_meta))
             }
@@ -1470,6 +1474,17 @@ struct LogFileInfo {
     timestamp: OffsetDateTime,
 }
 
+struct SessionMetaParams {
+    forked_from_id: Option<ThreadId>,
+    parent_thread_id: Option<ThreadId>,
+    source: SessionSource,
+    thread_source: Option<ThreadSource>,
+    base_instructions: BaseInstructions,
+    dynamic_tools: Vec<DynamicToolSpec>,
+    multi_agent_version: Option<MultiAgentVersion>,
+    timestamp_override: Option<String>,
+}
+
 fn precompute_log_file_info(
     config: &impl RolloutConfigView,
     conversation_id: ThreadId,
@@ -1535,15 +1550,18 @@ fn open_log_file(path: &Path) -> std::io::Result<File> {
 fn create_session_meta(
     config: &impl RolloutConfigView,
     log_file_info: &LogFileInfo,
-    forked_from_id: Option<ThreadId>,
-    parent_thread_id: Option<ThreadId>,
-    source: SessionSource,
-    thread_source: Option<ThreadSource>,
-    base_instructions: BaseInstructions,
-    dynamic_tools: Vec<DynamicToolSpec>,
-    multi_agent_version: Option<MultiAgentVersion>,
-    timestamp_override: Option<String>,
+    params: SessionMetaParams,
 ) -> std::io::Result<SessionMeta> {
+    let SessionMetaParams {
+        forked_from_id,
+        parent_thread_id,
+        source,
+        thread_source,
+        base_instructions,
+        dynamic_tools,
+        multi_agent_version,
+        timestamp_override,
+    } = params;
     let timestamp_format: &[FormatItem] =
         format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
     let timestamp = match timestamp_override {

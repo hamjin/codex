@@ -238,7 +238,11 @@ pub async fn materialize_rollout_items_for_replay(
                 match RolloutRecorder::load_rollout_items(&resolved_path).await {
                     Ok((mut reference_items, _, _)) => {
                         if reference.filter_fork_history {
-                            reference_items.retain(|item| keep_forked_rollout_item(item, true));
+                            reference_items.retain(|item| {
+                                keep_forked_rollout_item(
+                                    item, /*preserve_reference_context_item*/ true,
+                                )
+                            });
                         }
                         if let Some(filter_texts) =
                             reference.developer_message_filter_texts.as_deref()
