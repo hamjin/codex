@@ -46,6 +46,8 @@ use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -86,6 +88,7 @@ pub fn build_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
 pub struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
+    is_guardian_session: bool,
     next_item_index: i64,
     current_rollout_index: usize,
     next_rollout_index: usize,
@@ -102,6 +105,7 @@ impl ThreadHistoryBuilder {
         Self {
             turns: Vec::new(),
             current_turn: None,
+            is_guardian_session: false,
             next_item_index: 1,
             current_rollout_index: 0,
             next_rollout_index: 0,
@@ -231,9 +235,17 @@ impl ThreadHistoryBuilder {
         self.next_rollout_index += 1;
         match item {
             RolloutItem::EventMsg(event) => self.handle_event(event),
+            RolloutItem::Compacted(_)
+                if self.is_guardian_session && self.current_turn.is_none() => {}
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(item),
-            RolloutItem::TurnContext(_) | RolloutItem::SessionMeta(_) => {}
+            RolloutItem::SessionMeta(meta) => {
+                self.is_guardian_session = matches!(
+                    &meta.meta.source,
+                    SessionSource::SubAgent(SubAgentSource::Other(name)) if name == "guardian"
+                );
+            }
+            RolloutItem::TurnContext(_) => {}
         }
     }
 
@@ -1245,6 +1257,8 @@ mod tests {
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
     use codex_protocol::protocol::PatchApplyBeginEvent;
+    use codex_protocol::protocol::SessionMeta;
+    use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
@@ -2964,6 +2978,26 @@ mod tests {
                 items: Vec::new(),
             }]
         );
+    }
+
+    #[test]
+    fn ignores_guardian_maintenance_compaction_outside_a_turn() {
+        let items = vec![
+            RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    source: SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
+                    ..Default::default()
+                },
+                git: None,
+            }),
+            RolloutItem::Compacted(CompactedItem {
+                message: String::new(),
+                replacement_history: None,
+            }),
+        ];
+
+        assert_eq!(build_turns_from_rollout_items(&items[1..]).len(), 1);
+        assert_eq!(build_turns_from_rollout_items(&items), Vec::new());
     }
 
     #[test]
