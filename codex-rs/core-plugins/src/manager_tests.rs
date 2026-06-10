@@ -183,7 +183,10 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
         &plugin_root.join(".codex-plugin/plugin.json"),
         r#"{
   "name": "sample",
-  "description": "Plugin that includes the sample MCP server and Skills"
+  "description": "Plugin that includes the sample MCP server and Skills",
+  "interface": {
+    "developerName": "OpenAI"
+  }
 }"#,
     );
     write_file(
@@ -230,6 +233,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
             manifest_description: Some(
                 "Plugin that includes the sample MCP server and Skills".to_string(),
             ),
+            manifest_developer_name: Some("OpenAI".to_string()),
             root: AbsolutePathBuf::try_from(plugin_root.clone()).unwrap(),
             enabled: true,
             skill_roots: vec![plugin_root.join("skills").abs()],
@@ -1076,6 +1080,7 @@ async fn load_plugins_preserves_disabled_plugins_without_effective_contributions
             config_name: "sample@test".to_string(),
             manifest_name: None,
             manifest_description: None,
+            manifest_developer_name: None,
             root: AbsolutePathBuf::try_from(plugin_root).unwrap(),
             enabled: false,
             skill_roots: Vec::new(),
@@ -1240,6 +1245,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
         config_name: config_name.to_string(),
         manifest_name: Some(manifest_name.to_string()),
         manifest_description: None,
+        manifest_developer_name: None,
         root: AbsolutePathBuf::try_from(codex_home.path().join(dir_name)).unwrap(),
         enabled: true,
         skill_roots: Vec::new(),

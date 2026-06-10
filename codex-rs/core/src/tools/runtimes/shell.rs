@@ -13,9 +13,10 @@ use crate::exec::ExecCapturePolicy;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::review_approval_request;
+use crate::plugin_script_lifecycle::PluginScriptExecution;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::SandboxPermissions;
-use crate::sandboxing::execute_env;
+use crate::sandboxing::execute_exec_request_with_after_spawn;
 use crate::shell::ShellType;
 use crate::tools::flat_tool_name;
 use crate::tools::network_approval::NetworkApprovalMode;
@@ -48,6 +49,7 @@ use codex_shell_command::powershell::prefix_powershell_script_with_utf8;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
@@ -239,6 +241,12 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
+        let plugin_script = PluginScriptExecution::resolve(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &req.hook_command,
+            &req.cwd,
+        );
         let session_shell = ctx.session.user_shell();
         let (file_system_sandbox_policy, _) = attempt.permissions.to_runtime_permissions();
         let sandbox_permissions = sandbox_permissions_preserving_denied_reads(
@@ -287,9 +295,38 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         };
 
         if self.backend == ShellRuntimeBackend::ShellCommandZshFork {
-            match zsh_fork_backend::maybe_run_shell_command(req, attempt, ctx, &command).await? {
-                Some(out) => return Ok(out),
-                None => {
+            match zsh_fork_backend::maybe_run_shell_command(
+                req,
+                attempt,
+                ctx,
+                &command,
+                plugin_script.clone(),
+            )
+            .await
+            {
+                Ok(Some(out)) => {
+                    if req.cancellation_token.is_cancelled()
+                        && let Some(plugin_script) = plugin_script.as_ref()
+                    {
+                        plugin_script.mark_cancelled();
+                    }
+                    if let Some(plugin_script) = plugin_script.as_ref() {
+                        plugin_script.finish(Some(out.exit_code), out.timed_out);
+                    }
+                    return Ok(out);
+                }
+                Err(err) => {
+                    if req.cancellation_token.is_cancelled()
+                        && let Some(plugin_script) = plugin_script.as_ref()
+                    {
+                        plugin_script.mark_cancelled();
+                    }
+                    if let Some(plugin_script) = plugin_script.as_ref() {
+                        plugin_script.finish(None, /*failed*/ true);
+                    }
+                    return Err(err);
+                }
+                Ok(None) => {
                     tracing::warn!(
                         "ZshFork backend specified, but conditions for using it were not met, falling back to normal execution",
                     );
@@ -311,9 +348,30 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         let env = attempt
             .env_for(command, options, managed_network)
             .map_err(|err| ToolError::Codex(err.into()))?;
-        let out = execute_env(env, Self::stdout_stream(ctx))
-            .await
-            .map_err(ToolError::Codex)?;
-        Ok(out)
+        let after_spawn = plugin_script.as_ref().map(|plugin_script| {
+            let plugin_script = Arc::clone(plugin_script);
+            Box::new(move || plugin_script.mark_started()) as Box<dyn FnOnce() + Send>
+        });
+        let result =
+            execute_exec_request_with_after_spawn(env, Self::stdout_stream(ctx), after_spawn).await;
+        if req.cancellation_token.is_cancelled()
+            && let Some(plugin_script) = plugin_script.as_ref()
+        {
+            plugin_script.mark_cancelled();
+        }
+        match result {
+            Ok(out) => {
+                if let Some(plugin_script) = plugin_script.as_ref() {
+                    plugin_script.finish(Some(out.exit_code), out.timed_out);
+                }
+                Ok(out)
+            }
+            Err(err) => {
+                if let Some(plugin_script) = plugin_script.as_ref() {
+                    plugin_script.finish(None, /*failed*/ true);
+                }
+                Err(ToolError::Codex(err))
+            }
+        }
     }
 }

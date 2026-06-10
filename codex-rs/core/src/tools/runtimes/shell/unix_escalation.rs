@@ -104,6 +104,7 @@ pub(super) async fn try_run_zsh_fork(
     attempt: &SandboxAttempt<'_>,
     ctx: &ToolCtx,
     command: &[String],
+    plugin_script: Option<Arc<crate::plugin_script_lifecycle::PluginScriptExecution>>,
 ) -> Result<Option<ExecToolCallOutput>, ToolError> {
     let Some(shell_zsh_path) = ctx.session.services.shell_zsh_path.as_ref() else {
         tracing::warn!("ZshFork backend specified, but shell_zsh_path is not configured.");
@@ -184,6 +185,7 @@ pub(super) async fn try_run_zsh_fork(
         windows_sandbox_workspace_roots,
         codex_linux_sandbox_exe: ctx.turn.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: ctx.turn.features.use_legacy_landlock(),
+        plugin_script,
     };
     let main_execve_wrapper_exe = ctx
         .session
@@ -285,6 +287,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         windows_sandbox_workspace_roots: exec_request.windows_sandbox_workspace_roots.clone(),
         codex_linux_sandbox_exe: ctx.turn.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: ctx.turn.features.use_legacy_landlock(),
+        plugin_script: None,
     };
     let escalation_policy = CoreShellActionProvider {
         policy: Arc::clone(&exec_policy),
@@ -777,6 +780,7 @@ struct CoreShellCommandExecutor {
     windows_sandbox_workspace_roots: Vec<AbsolutePathBuf>,
     codex_linux_sandbox_exe: Option<PathBuf>,
     use_legacy_landlock: bool,
+    plugin_script: Option<Arc<crate::plugin_script_lifecycle::PluginScriptExecution>>,
 }
 
 struct PrepareSandboxedExecParams<'a> {
@@ -806,6 +810,18 @@ impl ShellCommandExecutor for CoreShellCommandExecutor {
             }
         }
 
+        let after_spawn = match (after_spawn, self.plugin_script.clone()) {
+            (Some(after_spawn), Some(plugin_script)) => Some(Box::new(move || {
+                after_spawn();
+                plugin_script.mark_started();
+            })
+                as Box<dyn FnOnce() + Send>),
+            (Some(after_spawn), None) => Some(after_spawn),
+            (None, Some(plugin_script)) => {
+                Some(Box::new(move || plugin_script.mark_started()) as Box<dyn FnOnce() + Send>)
+            }
+            (None, None) => None,
+        };
         let result = crate::sandboxing::execute_exec_request_with_after_spawn(
             crate::sandboxing::ExecRequest {
                 command: self.command.clone(),

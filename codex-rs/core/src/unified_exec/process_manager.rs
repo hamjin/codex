@@ -268,6 +268,7 @@ async fn finish_deferred_network_approval_after_process_exit_for_session(
 
 fn fail_process_with_message(process: &UnifiedExecProcess, message: String) -> UnifiedExecError {
     if let Some(message) = process.failure_message() {
+        process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
         process.terminate();
         return UnifiedExecError::process_failed(message);
     }
@@ -464,6 +465,7 @@ impl UnifiedExecProcessManager {
             .as_ref()
             .is_some_and(DeferredNetworkApproval::is_cancelled)
         {
+            process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
             let message = network_denial_message_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
@@ -484,6 +486,7 @@ impl UnifiedExecProcessManager {
             return Err(fail_process_with_message(process.as_ref(), message));
         }
         if let Some(message) = process.failure_message() {
+            process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
             let finish_result = finish_deferred_network_approval_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
@@ -502,6 +505,8 @@ impl UnifiedExecProcessManager {
             .await;
             self.release_process_id(request.process_id).await;
             if let Err(message) = finish_result {
+                process
+                    .finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
                 return Err(fail_process_with_message(process.as_ref(), message));
             }
             return Err(UnifiedExecError::process_failed(message));
@@ -557,6 +562,7 @@ impl UnifiedExecProcessManager {
             }
             let exit_code = process.exit_code();
             let exit = exit_code.unwrap_or(-1);
+            process.finish_plugin_script_lifecycle(exit_code, /*failed*/ false);
             emit_exec_end_for_unified_exec(
                 Arc::clone(&context.session),
                 Arc::clone(&context.turn),
@@ -617,6 +623,9 @@ impl UnifiedExecProcessManager {
         let mut status_after_write = None;
 
         if !request.input.is_empty() {
+            if request.input == INTERRUPT {
+                process.mark_plugin_script_cancelled();
+            }
             if !tty {
                 if request.input == INTERRUPT {
                     process.interrupt().await?;
@@ -635,6 +644,9 @@ impl UnifiedExecProcessManager {
                         if matches!(status, ProcessStatus::Exited { .. }) {
                             status_after_write = Some(status);
                         } else if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
+                            process.finish_plugin_script_lifecycle(
+                                /*exit_code*/ None, /*failed*/ true,
+                            );
                             process.terminate();
                             self.release_process_id(process_id).await;
                             return Err(err);
@@ -677,6 +689,7 @@ impl UnifiedExecProcessManager {
             .as_ref()
             .is_some_and(DeferredNetworkApproval::is_cancelled)
         {
+            process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
             let message =
                 network_denial_message_for_session(session.as_ref(), network_approval.clone())
                     .await;
@@ -684,6 +697,7 @@ impl UnifiedExecProcessManager {
             return Err(fail_process_with_message(process.as_ref(), message));
         }
         if let Some(message) = process.failure_message() {
+            process.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
             let finish_result = finish_deferred_network_approval_for_session(
                 session.as_ref(),
                 network_approval.clone(),
@@ -844,6 +858,9 @@ impl UnifiedExecProcessManager {
         // network-approval cleanup only after dropping that lock.
         if let Some(pruned_entry) = pruned_entry {
             unregister_network_approval_for_entry(&pruned_entry).await;
+            if !pruned_entry.process.has_exited() {
+                pruned_entry.process.mark_plugin_script_cancelled();
+            }
             pruned_entry.process.terminate();
         }
 
@@ -939,13 +956,11 @@ impl UnifiedExecProcessManager {
                     .await
                 }
             };
+            let spawned =
+                spawned.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_spawned(
-                spawned.map_err(|err| UnifiedExecError::create_process(err.to_string()))?,
-                request.sandbox,
-                spawn_lifecycle,
-            )
-            .await;
+            return UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle)
+                .await;
         }
         if environment.is_remote() {
             if !inherited_fds.is_empty() {
@@ -1271,6 +1286,9 @@ impl UnifiedExecProcessManager {
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
+            if !entry.process.has_exited() {
+                entry.process.mark_plugin_script_cancelled();
+            }
             entry.process.terminate();
         }
     }

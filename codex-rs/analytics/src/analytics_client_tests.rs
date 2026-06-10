@@ -43,6 +43,7 @@ use crate::facts::AppInvocation;
 use crate::facts::AppMentionedInput;
 use crate::facts::AppUsedInput;
 use crate::facts::CodexCompactionEvent;
+use crate::facts::CodexPluginScriptLifecycleEvent;
 use crate::facts::CompactionImplementation;
 use crate::facts::CompactionPhase;
 use crate::facts::CompactionReason;
@@ -54,6 +55,8 @@ use crate::facts::HookRunFact;
 use crate::facts::HookRunInput;
 use crate::facts::InputError;
 use crate::facts::InvocationType;
+use crate::facts::PluginScriptLifecycleStatus;
+use crate::facts::PluginScriptSkill;
 use crate::facts::PluginState;
 use crate::facts::PluginStateChangedInput;
 use crate::facts::PluginUsedInput;
@@ -3165,6 +3168,172 @@ async fn reducer_includes_plugin_id_for_plugin_skill_invocations() {
         payload[0]["event_params"]["plugin_id"],
         json!("sample@test")
     );
+}
+
+#[test]
+fn plugin_script_lifecycle_status_serializes_expected_values() {
+    let payload = serde_json::to_value([
+        PluginScriptLifecycleStatus::Started,
+        PluginScriptLifecycleStatus::Completed,
+        PluginScriptLifecycleStatus::Failed,
+        PluginScriptLifecycleStatus::Cancelled,
+    ])
+    .expect("serialize plugin script lifecycle statuses");
+
+    assert_eq!(
+        payload,
+        json!(["started", "completed", "failed", "cancelled"])
+    );
+}
+
+#[tokio::test]
+async fn reducer_enriches_plugin_script_lifecycle_events_without_sensitive_paths() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+    reducer
+        .ingest(
+            AnalyticsFact::Initialize {
+                connection_id: 7,
+                params: InitializeParams {
+                    client_info: ClientInfo {
+                        name: "codex-tui".to_string(),
+                        title: None,
+                        version: "1.0.0".to_string(),
+                    },
+                    capabilities: Some(InitializeCapabilities {
+                        experimental_api: true,
+                        request_attestation: false,
+                        opt_out_notification_methods: None,
+                    }),
+                },
+                product_client_id: DEFAULT_ORIGINATOR.to_string(),
+                runtime: sample_runtime_metadata(),
+                rpc_transport: AppServerRpcTransport::Stdio,
+            },
+            &mut events,
+        )
+        .await;
+    reducer
+        .ingest(
+            AnalyticsFact::ClientResponse {
+                connection_id: 7,
+                request_id: RequestId::Integer(1),
+                response: Box::new(sample_thread_start_response(
+                    "thread-1", /*ephemeral*/ false, "gpt-5",
+                )),
+            },
+            &mut events,
+        )
+        .await;
+    events.clear();
+
+    let sensitive_skill_path =
+        PathBuf::from("/Users/private/.codex/plugins/cache/openai/sample/skills/doc/SKILL.md");
+    let skill = PluginScriptSkill {
+        skill_name: "sample:doc".to_string(),
+        skill_path: sensitive_skill_path.clone(),
+    };
+    let expected_skill_id = skill_id_for_local_skill(
+        /*repo_url*/ None,
+        /*repo_root*/ None,
+        sensitive_skill_path.as_path(),
+        "sample:doc",
+    );
+    for (status, duration_ms, exit_code) in [
+        (PluginScriptLifecycleStatus::Started, None, None),
+        (PluginScriptLifecycleStatus::Completed, Some(42), Some(0)),
+    ] {
+        reducer
+            .ingest(
+                AnalyticsFact::Custom(CustomAnalyticsFact::PluginScriptLifecycle(Box::new(
+                    CodexPluginScriptLifecycleEvent {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        plugin_id: "sample@openai-curated".to_string(),
+                        execution_id: "execution-1".to_string(),
+                        script_path: "scripts/run.py".to_string(),
+                        status,
+                        duration_ms,
+                        exit_code,
+                        skill: Some(skill.clone()),
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    let payload = serde_json::to_value(&events).expect("serialize events");
+    assert_eq!(
+        payload,
+        json!([
+            {
+                "event_type": "codex_plugin_lifecycle_event",
+                "event_params": {
+                    "version": 1,
+                    "thread_id": "thread-1",
+                    "session_id": "session-thread-1",
+                    "turn_id": "turn-1",
+                    "app_server_client": {
+                        "product_client_id": DEFAULT_ORIGINATOR,
+                        "client_name": "codex-tui",
+                        "client_version": "1.0.0",
+                        "rpc_transport": "stdio",
+                        "experimental_api_enabled": true
+                    },
+                    "runtime": {
+                        "codex_rs_version": "0.1.0",
+                        "runtime_os": "macos",
+                        "runtime_os_version": "15.3.1",
+                        "runtime_arch": "aarch64"
+                    },
+                    "thread_source": "user",
+                    "subagent_source": null,
+                    "parent_thread_id": null,
+                    "plugin_id": "sample@openai-curated",
+                    "execution_id": "execution-1",
+                    "script_path": "scripts/run.py",
+                    "status": "started",
+                    "skill_id": expected_skill_id
+                }
+            },
+            {
+                "event_type": "codex_plugin_lifecycle_event",
+                "event_params": {
+                    "version": 1,
+                    "thread_id": "thread-1",
+                    "session_id": "session-thread-1",
+                    "turn_id": "turn-1",
+                    "app_server_client": {
+                        "product_client_id": DEFAULT_ORIGINATOR,
+                        "client_name": "codex-tui",
+                        "client_version": "1.0.0",
+                        "rpc_transport": "stdio",
+                        "experimental_api_enabled": true
+                    },
+                    "runtime": {
+                        "codex_rs_version": "0.1.0",
+                        "runtime_os": "macos",
+                        "runtime_os_version": "15.3.1",
+                        "runtime_arch": "aarch64"
+                    },
+                    "thread_source": "user",
+                    "subagent_source": null,
+                    "parent_thread_id": null,
+                    "plugin_id": "sample@openai-curated",
+                    "execution_id": "execution-1",
+                    "script_path": "scripts/run.py",
+                    "status": "completed",
+                    "duration_ms": 42,
+                    "exit_code": 0,
+                    "skill_id": expected_skill_id
+                }
+            }
+        ])
+    );
+    let serialized = payload.to_string();
+    assert!(!serialized.contains("/Users/private"));
+    assert!(!serialized.contains("SKILL.md"));
 }
 
 #[tokio::test]

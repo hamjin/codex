@@ -31,6 +31,7 @@ use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::head_tail_buffer::HeadTailBuffer;
 use super::process_state::ProcessState;
+use crate::plugin_script_lifecycle::PluginScriptExecution;
 
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
 pub(crate) trait SpawnLifecycle: std::fmt::Debug + Send + Sync {
@@ -86,6 +87,7 @@ pub(crate) struct UnifiedExecProcess {
     output_task: Option<JoinHandle<()>>,
     sandbox_type: SandboxType,
     _spawn_lifecycle: Option<SpawnLifecycleHandle>,
+    plugin_script_lifecycle: Option<Arc<PluginScriptExecution>>,
 }
 
 impl std::fmt::Debug for UnifiedExecProcess {
@@ -127,6 +129,26 @@ impl UnifiedExecProcess {
             output_task: None,
             sandbox_type,
             _spawn_lifecycle: spawn_lifecycle,
+            plugin_script_lifecycle: None,
+        }
+    }
+
+    pub(crate) fn set_plugin_script_lifecycle(
+        &mut self,
+        plugin_script_lifecycle: Option<Arc<PluginScriptExecution>>,
+    ) {
+        self.plugin_script_lifecycle = plugin_script_lifecycle;
+    }
+
+    pub(super) fn mark_plugin_script_cancelled(&self) {
+        if let Some(plugin_script_lifecycle) = self.plugin_script_lifecycle.as_ref() {
+            plugin_script_lifecycle.mark_cancelled();
+        }
+    }
+
+    pub(super) fn finish_plugin_script_lifecycle(&self, exit_code: Option<i32>, failed: bool) {
+        if let Some(plugin_script_lifecycle) = self.plugin_script_lifecycle.as_ref() {
+            plugin_script_lifecycle.finish(exit_code, failed);
         }
     }
 
@@ -230,6 +252,7 @@ impl UnifiedExecProcess {
         if state.failure_message.is_none() {
             let _ = self.state_tx.send_replace(state.failed(message));
         }
+        self.finish_plugin_script_lifecycle(/*exit_code*/ None, /*failed*/ true);
         self.terminate();
     }
 
@@ -515,6 +538,12 @@ impl UnifiedExecProcess {
 
 impl Drop for UnifiedExecProcess {
     fn drop(&mut self) {
+        let has_exited = self.has_exited();
+        if !has_exited {
+            self.mark_plugin_script_cancelled();
+        }
+        let failed = self.state_rx.borrow().failure_message.is_some();
+        self.finish_plugin_script_lifecycle(self.exit_code(), failed || !has_exited);
         self.terminate();
     }
 }

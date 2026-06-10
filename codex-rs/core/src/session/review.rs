@@ -151,6 +151,7 @@ pub(super) async fn spawn_review_thread(
         turn_metadata_state,
         extension_data,
         turn_skills: TurnSkillsContext::new(parent_turn_context.turn_skills.outcome.clone()),
+        first_party_plugin_roots: Arc::clone(&parent_turn_context.first_party_plugin_roots),
         turn_timing_state: Arc::new(TurnTimingState::default()),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),

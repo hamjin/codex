@@ -9,6 +9,13 @@ use crate::PluginCapabilitySummary;
 use crate::PluginHookSource;
 
 const MAX_CAPABILITY_SUMMARY_DESCRIPTION_LEN: usize = 1024;
+const OPENAI_DEVELOPER_NAME: &str = "OpenAI";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstPartyPluginRoot {
+    pub plugin_id: String,
+    pub plugin_root: AbsolutePathBuf,
+}
 
 /// A plugin that was loaded from disk, including merged MCP server definitions.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,6 +23,7 @@ pub struct LoadedPlugin<M> {
     pub config_name: String,
     pub manifest_name: Option<String>,
     pub manifest_description: Option<String>,
+    pub manifest_developer_name: Option<String>,
     pub root: AbsolutePathBuf,
     pub enabled: bool,
     pub skill_roots: Vec<AbsolutePathBuf>,
@@ -136,6 +144,25 @@ impl<M: Clone> PluginLoadOutcome<M> {
         skill_roots
     }
 
+    pub fn effective_first_party_plugin_roots(&self) -> Vec<FirstPartyPluginRoot> {
+        let mut plugin_roots = Vec::new();
+        let mut seen_paths = HashSet::new();
+        for plugin in self.plugins.iter().filter(|plugin| {
+            plugin.is_active()
+                && plugin.manifest_developer_name.as_deref() == Some(OPENAI_DEVELOPER_NAME)
+        }) {
+            if seen_paths.insert(plugin.root.clone()) {
+                plugin_roots.push(FirstPartyPluginRoot {
+                    plugin_id: plugin.config_name.clone(),
+                    plugin_root: plugin.root.clone(),
+                });
+            }
+        }
+
+        plugin_roots.sort_unstable_by(|a, b| a.plugin_root.cmp(&b.plugin_root));
+        plugin_roots
+    }
+
     pub fn effective_mcp_servers(&self) -> HashMap<String, M> {
         let mut mcp_servers = HashMap::new();
         for plugin in self.plugins.iter().filter(|plugin| plugin.is_active()) {
@@ -220,6 +247,7 @@ mod tests {
             config_name: config_name.to_string(),
             manifest_name: None,
             manifest_description: None,
+            manifest_developer_name: None,
             root: test_path(config_name),
             enabled: true,
             skill_roots,
@@ -247,6 +275,41 @@ mod tests {
                 path: shared_root,
                 plugin_id: "zeta@test".to_string(),
                 plugin_root: test_path("zeta@test"),
+            }]
+        );
+    }
+
+    #[test]
+    fn effective_first_party_plugin_roots_only_includes_active_openai_plugins() {
+        let shared_root = test_path("shared-plugin");
+        let mut first_party = loaded_plugin("first@test", Vec::new());
+        first_party.root = shared_root.clone();
+        first_party.manifest_developer_name = Some(OPENAI_DEVELOPER_NAME.to_string());
+        let mut duplicate = loaded_plugin("duplicate@test", Vec::new());
+        duplicate.root = shared_root.clone();
+        duplicate.manifest_developer_name = Some(OPENAI_DEVELOPER_NAME.to_string());
+        let mut third_party = loaded_plugin("third@test", Vec::new());
+        third_party.manifest_developer_name = Some("Example Corp".to_string());
+        let mut disabled = loaded_plugin("disabled@test", Vec::new());
+        disabled.manifest_developer_name = Some(OPENAI_DEVELOPER_NAME.to_string());
+        disabled.enabled = false;
+        let mut broken = loaded_plugin("broken@test", Vec::new());
+        broken.manifest_developer_name = Some(OPENAI_DEVELOPER_NAME.to_string());
+        broken.error = Some("broken".to_string());
+
+        let outcome = PluginLoadOutcome::from_plugins(vec![
+            first_party,
+            duplicate,
+            third_party,
+            disabled,
+            broken,
+        ]);
+
+        assert_eq!(
+            outcome.effective_first_party_plugin_roots(),
+            vec![FirstPartyPluginRoot {
+                plugin_id: "first@test".to_string(),
+                plugin_root: shared_root,
             }]
         );
     }

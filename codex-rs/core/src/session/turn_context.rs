@@ -6,6 +6,7 @@ use crate::environment_selection::ResolvedTurnEnvironments;
 use codex_core_skills::HostLoadedSkills;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
+use codex_plugin::FirstPartyPluginRoot;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -101,6 +102,7 @@ pub struct TurnContext {
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_skills: TurnSkillsContext,
+    pub(crate) first_party_plugin_roots: Arc<Vec<FirstPartyPluginRoot>>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
@@ -269,6 +271,7 @@ impl TurnContext {
             turn_metadata_state: self.turn_metadata_state.clone(),
             extension_data: Arc::clone(&self.extension_data),
             turn_skills: self.turn_skills.clone(),
+            first_party_plugin_roots: Arc::clone(&self.first_party_plugin_roots),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
@@ -471,6 +474,7 @@ impl Session {
         cwd: AbsolutePathBuf,
         sub_id: String,
         skills_outcome: Arc<SkillLoadOutcome>,
+        first_party_plugin_roots: Vec<FirstPartyPluginRoot>,
     ) -> TurnContext {
         let reasoning_effort = session_configuration.collaboration_mode.reasoning_effort();
         let reasoning_summary = session_configuration
@@ -571,6 +575,7 @@ impl Session {
             turn_metadata_state,
             extension_data,
             turn_skills: TurnSkillsContext::new(skills_outcome),
+            first_party_plugin_roots: Arc::new(first_party_plugin_roots),
             turn_timing_state: Arc::new(TurnTimingState::default()),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
@@ -753,6 +758,7 @@ impl Session {
             .plugins_manager
             .plugins_for_config(&per_turn_config.plugins_config_input())
             .await;
+        let first_party_plugin_roots = plugin_outcome.effective_first_party_plugin_roots();
         let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
         let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots);
         let fs = primary_turn_environment
@@ -791,6 +797,7 @@ impl Session {
             cwd,
             sub_id,
             skills_outcome,
+            first_party_plugin_roots,
         );
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
 

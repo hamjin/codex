@@ -10,6 +10,7 @@ use crate::exec::ExecExpiration;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::review_approval_request;
+use crate::plugin_script_lifecycle::PluginScriptExecution;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecServerEnvConfig;
 use crate::sandboxing::SandboxPermissions;
@@ -38,6 +39,8 @@ use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 use crate::tools::sandboxing::sandbox_permissions_preserving_denied_reads;
 use crate::tools::sandboxing::with_cached_approval;
 use crate::unified_exec::NoopSpawnLifecycle;
+use crate::unified_exec::SpawnLifecycle;
+use crate::unified_exec::SpawnLifecycleHandle;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcess;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -96,6 +99,63 @@ pub struct UnifiedExecApprovalKey {
 pub struct UnifiedExecRuntime<'a> {
     manager: &'a UnifiedExecProcessManager,
     shell_mode: UnifiedExecShellMode,
+}
+
+struct PluginScriptSpawnLifecycle {
+    inner: SpawnLifecycleHandle,
+    plugin_script: Arc<PluginScriptExecution>,
+}
+
+impl std::fmt::Debug for PluginScriptSpawnLifecycle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PluginScriptSpawnLifecycle")
+            .field("inner", &self.inner)
+            .field("plugin_script", &"tracked")
+            .finish()
+    }
+}
+
+impl SpawnLifecycle for PluginScriptSpawnLifecycle {
+    fn inherited_fds(&self) -> Vec<i32> {
+        self.inner.inherited_fds()
+    }
+
+    fn after_spawn(&mut self) {
+        self.inner.after_spawn();
+        self.plugin_script.mark_started();
+    }
+}
+
+fn wrap_spawn_lifecycle(
+    inner: SpawnLifecycleHandle,
+    plugin_script: Option<&Arc<PluginScriptExecution>>,
+) -> SpawnLifecycleHandle {
+    match plugin_script {
+        Some(plugin_script) => Box::new(PluginScriptSpawnLifecycle {
+            inner,
+            plugin_script: Arc::clone(plugin_script),
+        }),
+        None => inner,
+    }
+}
+
+fn attach_plugin_script(
+    result: Result<UnifiedExecProcess, UnifiedExecError>,
+    plugin_script: Option<Arc<PluginScriptExecution>>,
+) -> Result<UnifiedExecProcess, UnifiedExecError> {
+    match result {
+        Ok(mut process) => {
+            process.set_plugin_script_lifecycle(plugin_script);
+            Ok(process)
+        }
+        Err(err) => {
+            if let Some(plugin_script) = plugin_script.as_ref() {
+                plugin_script.finish(None, /*failed*/ true);
+            }
+            Err(err)
+        }
+    }
 }
 
 fn unified_exec_options(
@@ -262,6 +322,12 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<UnifiedExecProcess, ToolError> {
+        let plugin_script = PluginScriptExecution::resolve(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &req.hook_command,
+            &req.cwd,
+        );
         let base_command = &req.command;
         let session_shell = ctx.session.user_shell();
         let (file_system_sandbox_policy, _) = attempt.permissions.to_runtime_permissions();
@@ -348,25 +414,25 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                                 .to_string(),
                         ));
                     }
-                    return self
+                    let result = self
                         .manager
                         .open_session_with_exec_env(
                             req.process_id,
                             &prepared.exec_request,
                             req.tty,
-                            prepared.spawn_lifecycle,
+                            wrap_spawn_lifecycle(prepared.spawn_lifecycle, plugin_script.as_ref()),
                             req.environment.as_ref(),
                         )
-                        .await
-                        .map_err(|err| match err {
-                            UnifiedExecError::SandboxDenied { output, .. } => {
-                                ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
-                                    output: Box::new(output),
-                                    network_policy_decision: None,
-                                }))
-                            }
-                            other => ToolError::Rejected(other.to_string()),
-                        });
+                        .await;
+                    return attach_plugin_script(result, plugin_script).map_err(|err| match err {
+                        UnifiedExecError::SandboxDenied { output, .. } => {
+                            ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+                                output: Box::new(output),
+                                network_policy_decision: None,
+                            }))
+                        }
+                        other => ToolError::Rejected(other.to_string()),
+                    });
                 }
                 None => {
                     tracing::warn!(
@@ -383,24 +449,27 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             .env_for(command, options, managed_network)
             .map_err(|err| ToolError::Codex(err.into()))?;
         exec_env.exec_server_env_config = req.exec_server_env_config.clone();
-        self.manager
+        let spawn_lifecycle =
+            wrap_spawn_lifecycle(Box::new(NoopSpawnLifecycle), plugin_script.as_ref());
+        let result = self
+            .manager
             .open_session_with_exec_env(
                 req.process_id,
                 &exec_env,
                 req.tty,
-                Box::new(NoopSpawnLifecycle),
+                spawn_lifecycle,
                 req.environment.as_ref(),
             )
-            .await
-            .map_err(|err| match err {
-                UnifiedExecError::SandboxDenied { output, .. } => {
-                    ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
-                        output: Box::new(output),
-                        network_policy_decision: None,
-                    }))
-                }
-                other => ToolError::Rejected(other.to_string()),
-            })
+            .await;
+        attach_plugin_script(result, plugin_script).map_err(|err| match err {
+            UnifiedExecError::SandboxDenied { output, .. } => {
+                ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+                    output: Box::new(output),
+                    network_policy_decision: None,
+                }))
+            }
+            other => ToolError::Rejected(other.to_string()),
+        })
     }
 }
 

@@ -632,6 +632,7 @@ async fn load_plugin(
         config_name,
         manifest_name: None,
         manifest_description: None,
+        manifest_developer_name: None,
         root,
         enabled: plugin.enabled,
         skill_roots: Vec::new(),
@@ -672,6 +673,10 @@ async fn load_plugin(
         return loaded_plugin;
     };
 
+    loaded_plugin.manifest_developer_name = manifest
+        .interface
+        .as_ref()
+        .and_then(|interface| interface.developer_name.clone());
     let manifest_paths = &manifest.paths;
     match scope {
         PluginLoadScope::AllCapabilities {
