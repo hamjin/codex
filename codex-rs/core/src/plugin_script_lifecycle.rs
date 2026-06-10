@@ -125,9 +125,9 @@ fn resolve_plugin_script(
     let script_token = script_token(command)?;
     let script_path = Path::new(&script_token);
     let script_path = if script_path.is_absolute() {
-        script_path.to_path_buf()
+        AbsolutePathBuf::try_from(script_path).ok()?
     } else {
-        cwd.join(script_path).into_path_buf()
+        cwd.join(script_path)
     };
     let script_path = script_path.canonicalize().ok()?;
 
