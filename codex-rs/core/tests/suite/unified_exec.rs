@@ -3321,7 +3321,7 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
             ev_completed("resp-2"),
         ]),
     ];
-    let request_log = mount_sse_sequence(&server, responses).await;
+    mount_sse_sequence(&server, responses).await;
 
     submit_unified_exec_turn(
         &test,
@@ -3329,18 +3329,11 @@ async fn unified_exec_logs_macos_seatbelt_denials() -> Result<()> {
         PermissionProfile::read_only(),
     )
     .await?;
+    let output = wait_for_raw_unified_exec_output(&test, call_id).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-
-    let requests = request_log.requests();
-    let bodies = requests
-        .into_iter()
-        .map(|request| request.body_json())
-        .collect::<Vec<_>>();
-    let outputs = collect_tool_outputs(&bodies)?;
-    let output = outputs.get(call_id).context("denied touch output")?;
 
     let command_error = output
         .output

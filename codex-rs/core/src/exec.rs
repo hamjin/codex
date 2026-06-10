@@ -890,39 +890,6 @@ struct RawExecToolCallOutput {
     pub timed_out: bool,
 }
 
-fn append_capped_important(dst: &mut Vec<u8>, src: &[u8], max_bytes: usize) {
-    if src.len() >= max_bytes {
-        dst.clear();
-        dst.extend_from_slice(&src[..max_bytes]);
-        return;
-    }
-
-    let retained_len = max_bytes.saturating_sub(src.len()).min(dst.len());
-    dst.truncate(retained_len);
-    dst.extend_from_slice(src);
-}
-
-fn append_to_raw_stderr(
-    raw_output: &mut RawExecToolCallOutput,
-    bytes: &[u8],
-    retained_bytes_cap: Option<usize>,
-) {
-    match retained_bytes_cap {
-        Some(max_bytes) => append_capped_important(&mut raw_output.stderr.text, bytes, max_bytes),
-        None => raw_output.stderr.text.extend_from_slice(bytes),
-    }
-
-    raw_output.aggregated_output =
-        aggregate_output(&raw_output.stdout, &raw_output.stderr, retained_bytes_cap);
-
-    let aggregate_needs_denials = !raw_output.aggregated_output.text.ends_with(bytes);
-    if let Some(max_bytes) = retained_bytes_cap
-        && aggregate_needs_denials
-    {
-        append_capped_important(&mut raw_output.aggregated_output.text, bytes, max_bytes);
-    }
-}
-
 #[inline]
 fn append_capped(dst: &mut Vec<u8>, src: &[u8], max_bytes: usize) {
     if dst.len() >= max_bytes {
@@ -1054,7 +1021,27 @@ async fn exec(
     if let Some(logger) = denial_logger
         && let Some(bytes) = format_sandbox_denials(&logger.finish().await)
     {
-        append_to_raw_stderr(&mut raw_output, &bytes, capture_policy.retained_bytes_cap());
+        if let Some(max_bytes) = capture_policy.retained_bytes_cap() {
+            raw_output
+                .stderr
+                .text
+                .truncate(max_bytes.saturating_sub(bytes.len()));
+        }
+        raw_output.stderr.text.extend_from_slice(&bytes);
+        raw_output.aggregated_output = aggregate_output(
+            &raw_output.stdout,
+            &raw_output.stderr,
+            capture_policy.retained_bytes_cap(),
+        );
+        if let Some(max_bytes) = capture_policy.retained_bytes_cap()
+            && !raw_output.aggregated_output.text.ends_with(&bytes)
+        {
+            raw_output
+                .aggregated_output
+                .text
+                .truncate(max_bytes.saturating_sub(bytes.len()));
+            raw_output.aggregated_output.text.extend_from_slice(&bytes);
+        }
     }
     Ok(raw_output)
 }

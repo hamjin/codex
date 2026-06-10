@@ -18,7 +18,6 @@ use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
 use codex_config::config_toml::ToolsToml;
-use codex_config::config_toml::UnifiedExecToml;
 use codex_config::loader::project_trust_key;
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::FilesystemPermissionsToml;
@@ -408,44 +407,6 @@ enabled = false
             ..Default::default()
         })
     );
-}
-
-#[test]
-fn tools_unified_exec_config_deserializes() {
-    let cfg: ConfigToml = toml::from_str(
-        r#"
-[tools.unified_exec]
-log_macos_seatbelt_denials = true
-"#,
-    )
-    .expect("TOML deserialization should succeed");
-
-    assert_eq!(
-        cfg.tools,
-        Some(ToolsToml {
-            unified_exec: Some(UnifiedExecToml {
-                log_macos_seatbelt_denials: Some(true),
-            }),
-            ..Default::default()
-        })
-    );
-}
-
-#[test]
-fn unified_exec_denial_logging_defaults_to_false() {
-    let cfg = ConfigToml {
-        tools: Some(ToolsToml {
-            unified_exec: Some(UnifiedExecToml {
-                log_macos_seatbelt_denials: Some(true),
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    assert!(resolve_unified_exec_log_macos_seatbelt_denials(&cfg));
-    assert!(!resolve_unified_exec_log_macos_seatbelt_denials(
-        &ConfigToml::default()
-    ));
 }
 
 #[tokio::test]

@@ -24,6 +24,7 @@ const MAX_COLLECTED_LOG_CHARS: usize = 1_000;
 #[cfg(target_os = "macos")]
 mod pid_tracker;
 
+#[cfg(target_os = "macos")]
 /// A unique macOS Seatbelt sandbox denial emitted by a process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxDenial {
@@ -36,6 +37,7 @@ pub struct SandboxDenial {
 struct LoggedDenial {
     pid: i32,
     denial: SandboxDenial,
+    chars: usize,
 }
 
 /// Best-effort collector for macOS Seatbelt denials emitted by a process tree.
@@ -46,8 +48,6 @@ pub struct DenialLogger {
     pid_tracker: Option<PidTracker>,
     #[cfg(target_os = "macos")]
     log_reader: JoinHandle<VecDeque<LoggedDenial>>,
-    #[cfg(target_os = "macos")]
-    stderr_reader: JoinHandle<()>,
 }
 
 impl DenialLogger {
@@ -69,46 +69,36 @@ impl DenialLogger {
         let stdout = log_stream.stdout.take()?;
         let stderr = log_stream.stderr.take()?;
         let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
-        let stdout_ready_tx = ready_tx.clone();
         let log_reader = tokio::spawn(async move {
-            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut stdout = tokio::io::BufReader::new(stdout);
+            let mut stderr = tokio::io::BufReader::new(stderr);
             let mut logged_denials = VecDeque::new();
             let mut collected_chars = 0;
-            let mut chunk = Vec::new();
-            loop {
-                match reader.read_until(b'\n', &mut chunk).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        if chunk.starts_with(LOG_STREAM_READY_PREFIX.as_bytes()) {
-                            let _ = stdout_ready_tx.try_send(());
-                        } else if let Some(denial) = parse_log_line(&chunk) {
-                            push_logged_denial(
-                                &mut logged_denials,
-                                &mut collected_chars,
-                                denial,
-                                max_chars,
-                            );
+            let mut stdout_line = Vec::new();
+            let mut stderr_line = String::new();
+            let mut stdout_open = true;
+            let mut stderr_open = true;
+            while stdout_open || stderr_open {
+                tokio::select! {
+                    result = stdout.read_until(b'\n', &mut stdout_line), if stdout_open => {
+                        stdout_open = result.is_ok_and(|read| read > 0);
+                        if stdout_line.starts_with(LOG_STREAM_READY_PREFIX.as_bytes()) {
+                            let _ = ready_tx.try_send(());
+                        } else if let Some(denial) = parse_log_line(&stdout_line) {
+                            push_logged_denial(&mut logged_denials, &mut collected_chars, denial, max_chars);
                         }
-                        chunk.clear();
+                        stdout_line.clear();
+                    }
+                    result = stderr.read_line(&mut stderr_line), if stderr_open => {
+                        stderr_open = result.is_ok_and(|read| read > 0);
+                        if stderr_line.starts_with(LOG_STREAM_READY_PREFIX) {
+                            let _ = ready_tx.try_send(());
+                        }
+                        stderr_line.clear();
                     }
                 }
             }
             logged_denials
-        });
-
-        let stderr_reader = tokio::spawn(async move {
-            let mut reader = tokio::io::BufReader::new(stderr);
-            let mut line = String::new();
-            while reader
-                .read_line(&mut line)
-                .await
-                .is_ok_and(|bytes_read| bytes_read > 0)
-            {
-                if line.starts_with(LOG_STREAM_READY_PREFIX) {
-                    let _ = ready_tx.try_send(());
-                }
-                line.clear();
-            }
         });
 
         let ready = tokio::time::timeout(LOG_STREAM_READY_TIMEOUT, ready_rx.recv())
@@ -118,7 +108,6 @@ impl DenialLogger {
             let _ = log_stream.kill().await;
             let _ = log_stream.wait().await;
             log_reader.abort();
-            stderr_reader.abort();
             return None;
         }
 
@@ -126,7 +115,6 @@ impl DenialLogger {
             log_stream,
             pid_tracker: None,
             log_reader,
-            stderr_reader,
         })
     }
 
@@ -169,8 +157,6 @@ impl DenialLogger {
         }
         let _ = self.log_stream.kill().await;
         let _ = self.log_stream.wait().await;
-        let _ = self.stderr_reader.await;
-
         let logged_denials = self.log_reader.await.unwrap_or_default();
         if pid_set.is_empty() {
             return Vec::new();
@@ -178,7 +164,7 @@ impl DenialLogger {
 
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut denials: Vec<SandboxDenial> = Vec::new();
-        for LoggedDenial { pid, denial } in logged_denials {
+        for LoggedDenial { pid, denial, .. } in logged_denials {
             if pid_set.contains(&pid)
                 && seen.insert((denial.name.clone(), denial.capability.clone()))
             {
@@ -202,8 +188,7 @@ fn push_logged_denial(
     logged_denial: LoggedDenial,
     max_chars: Option<usize>,
 ) {
-    let denial_chars =
-        logged_denial.denial.name.chars().count() + logged_denial.denial.capability.chars().count();
+    let denial_chars = logged_denial.chars;
     if let Some(max_chars) = max_chars {
         if denial_chars > max_chars {
             return;
@@ -212,8 +197,7 @@ fn push_logged_denial(
             let Some(removed) = logged_denials.pop_front() else {
                 break;
             };
-            *collected_chars -=
-                removed.denial.name.chars().count() + removed.denial.capability.chars().count();
+            *collected_chars -= removed.chars;
         }
         *collected_chars += denial_chars;
     }
@@ -225,9 +209,11 @@ fn parse_log_line(line: &[u8]) -> Option<LoggedDenial> {
     let json = serde_json::from_slice::<serde_json::Value>(line).ok()?;
     let msg = json.get("eventMessage")?.as_str()?;
     let (pid, name, capability) = parse_message(msg)?;
+    let chars = name.chars().count() + capability.chars().count();
     Some(LoggedDenial {
         pid,
         denial: SandboxDenial { name, capability },
+        chars,
     })
 }
 

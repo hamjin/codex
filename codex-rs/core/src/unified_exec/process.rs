@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
-use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -338,47 +337,28 @@ impl UnifiedExecProcess {
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
         spawn_lifecycle: SpawnLifecycleHandle,
-        mut denial_logger: Option<DenialLogger>,
+        denial_logger: Option<DenialLogger>,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
             stdout_rx,
             stderr_rx,
-            mut exit_rx,
+            exit_rx,
         } = spawned;
         let output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
-        let mut managed = Self::new(
+        let managed = Self::new(
             ProcessHandle::Local(Box::new(process_handle)),
             sandbox_type,
             Some(spawn_lifecycle),
         );
-        managed.output_task = Some(Self::spawn_local_output_task(
+        let output_task = Self::spawn_local_output_task(
             output_rx,
             Arc::clone(&managed.output_buffer),
             Arc::clone(&managed.output_notify),
             managed.output_tx.clone(),
-        ));
+        );
 
-        let immediate_exit = match exit_rx.try_recv() {
-            Ok(exit_code) => Some(Some(exit_code)),
-            Err(TryRecvError::Closed) => Some(None),
-            Err(TryRecvError::Empty) => None,
-        };
-        if let Some(exit_code) = immediate_exit {
-            managed
-                .finish_local_exit(exit_code, denial_logger.take())
-                .await?;
-            return Ok(managed);
-        }
-
-        if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
-            managed
-                .finish_local_exit(exit_result.ok(), denial_logger.take())
-                .await?;
-            return Ok(managed);
-        }
-
-        let output_task = managed.output_task.take();
+        let mut state_rx = managed.state_rx.clone();
         tokio::spawn({
             let state_tx = managed.state_tx.clone();
             let cancellation_token = managed.cancellation_token.clone();
@@ -389,9 +369,7 @@ impl UnifiedExecProcess {
             let output_closed_notify = Arc::clone(&managed.output_closed_notify);
             async move {
                 let exit_code = exit_rx.await.ok();
-                if let Some(output_task) = output_task {
-                    let _ = output_task.await;
-                }
+                let _ = output_task.await;
                 append_seatbelt_denials(denial_logger, &output_buffer, &output_notify, &output_tx)
                     .await;
                 output_closed.store(true, Ordering::Release);
@@ -402,28 +380,13 @@ impl UnifiedExecProcess {
             }
         });
 
-        Ok(managed)
-    }
-
-    async fn finish_local_exit(
-        &mut self,
-        exit_code: Option<i32>,
-        logger: Option<DenialLogger>,
-    ) -> Result<(), UnifiedExecError> {
-        if let Some(output_task) = self.output_task.take() {
-            let _ = output_task.await;
+        if tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, state_rx.changed())
+            .await
+            .is_ok()
+        {
+            managed.check_for_sandbox_denial().await?;
         }
-        append_seatbelt_denials(
-            logger,
-            &self.output_buffer,
-            &self.output_notify,
-            &self.output_tx,
-        )
-        .await;
-        self.output_closed.store(true, Ordering::Release);
-        self.output_closed_notify.notify_waiters();
-        self.signal_exit(exit_code);
-        self.check_for_sandbox_denial().await
+        Ok(managed)
     }
 
     pub(super) async fn from_exec_server_started(
@@ -571,12 +534,6 @@ impl UnifiedExecProcess {
                 };
             }
         })
-    }
-
-    fn signal_exit(&self, exit_code: Option<i32>) {
-        let state = self.state_rx.borrow().clone();
-        let _ = self.state_tx.send_replace(state.exited(exit_code));
-        self.cancellation_token.cancel();
     }
 }
 
