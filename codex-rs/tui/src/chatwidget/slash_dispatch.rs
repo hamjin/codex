@@ -623,6 +623,7 @@ impl ChatWidget {
     fn clear_live_goal_submission(&mut self) {
         self.bottom_pane
             .set_composer_text(String::new(), Vec::new(), Vec::new());
+        self.bottom_pane.set_composer_pending_pastes(Vec::new());
         self.bottom_pane.drain_pending_submission_state();
     }
 

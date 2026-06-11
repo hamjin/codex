@@ -56,5 +56,6 @@ async fn goal_slash_command_emits_only_inserted_paste_text_element() {
         draft.objective
     );
     assert_eq!(draft.pending_pastes, vec![(placeholder, paste)]);
+    assert!(chat.bottom_pane.composer_pending_pastes().is_empty());
     assert_no_submit_op(&mut op_rx);
 }
