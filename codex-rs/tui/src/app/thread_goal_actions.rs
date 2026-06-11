@@ -283,7 +283,7 @@ impl App {
         }
     }
 
-    fn show_replace_thread_goal_confirmation(
+    pub(super) fn show_replace_thread_goal_confirmation(
         &mut self,
         thread_id: ThreadId,
         draft: goal_files::GoalDraft,
