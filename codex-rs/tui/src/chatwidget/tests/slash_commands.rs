@@ -851,6 +851,29 @@ async fn queued_goal_slash_command_restores_large_paste_for_edit() {
 }
 
 #[tokio::test]
+async fn interrupt_disambiguates_same_sized_goal_pastes() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    handle_turn_started(&mut chat, "turn-1");
+    let first = "a".repeat(codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS + 1);
+    let second = "b".repeat(first.len());
+
+    queue_goal_with_large_paste(&mut chat, first);
+    chat.bottom_pane
+        .set_composer_text("/goal ".to_string(), Vec::new(), Vec::new());
+    chat.handle_paste(second.clone());
+    chat.on_interrupted_turn(TurnAbortReason::Interrupted);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+    let remaining = chat.bottom_pane.composer_pending_pastes();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].1, second);
+    assert!(chat.bottom_pane.composer_text().contains(&remaining[0].0));
+}
+
+#[tokio::test]
 async fn queued_goal_slash_command_preserves_current_draft_metadata() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
