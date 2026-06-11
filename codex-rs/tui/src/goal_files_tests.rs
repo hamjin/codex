@@ -121,7 +121,8 @@ async fn materializes_local_and_remote_images() {
         },
     )
     .await
-    .expect("materialize goal draft");
+    .expect("materialize goal draft")
+    .objective;
 
     assert!(objective.contains("image file: /tmp/codex/attachments/"));
     assert!(objective.contains(
