@@ -1577,7 +1577,7 @@ impl PluginRequestProcessor {
                     .as_ref()
                     .map(plugin_app_category_by_id_from_value)
                     .unwrap_or_default();
-                let all_connectors = connectors::list_cached_all_connectors(&config)
+                let all_connectors = connectors::list_cached_all_connectors(&config, &[])
                     .await
                     .unwrap_or_default();
                 connectors::connectors_for_plugin_apps(all_connectors, &plugin_apps)
@@ -1645,7 +1645,7 @@ impl PluginRequestProcessor {
                     plugin = plugin_id,
                     "failed to load app metadata after plugin install: {err:#}"
                 );
-                connectors::list_cached_all_connectors(config)
+                connectors::list_cached_all_connectors(config, &[])
                     .await
                     .unwrap_or_default()
             }
@@ -1911,7 +1911,7 @@ async fn load_plugin_app_summaries(
             Ok(connectors) => connectors,
             Err(err) => {
                 warn!("failed to load app metadata for plugin/read: {err:#}");
-                connectors::list_cached_all_connectors(config)
+                connectors::list_cached_all_connectors(config, &[])
                     .await
                     .unwrap_or_default()
             }
