@@ -1112,9 +1112,21 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             break;
         }
         let reference_depth = next_reference.max_depth;
-        let Some(reference_path) =
+        let reference_path = if let Some(codex_home) = codex_home_from_rollout_path(path) {
+            match Box::pin(resolve_rollout_reference_rollout_path(
+                codex_home,
+                &next_reference,
+            ))
+            .await
+            {
+                Ok(reference_path) => reference_path,
+                Err(_) => break,
+            }
+        } else if let Some(reference_path) =
             compression::existing_rollout_path(next_reference.rollout_path.as_path()).await
-        else {
+        {
+            reference_path
+        } else {
             break;
         };
         let (referenced_summary, next_reference) =
@@ -1144,6 +1156,24 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         summary.first_user_message = Some(first_user_message);
     }
     Ok(summary)
+}
+
+pub(crate) async fn read_preview_metadata(
+    path: &Path,
+) -> io::Result<(Option<String>, Option<String>)> {
+    let summary = read_head_summary(path, HEAD_RECORD_LIMIT).await?;
+    Ok((summary.first_user_message, summary.preview))
+}
+
+fn codex_home_from_rollout_path(path: &Path) -> Option<&Path> {
+    path.ancestors().find_map(|ancestor| {
+        matches!(
+            ancestor.file_name().and_then(|name| name.to_str()),
+            Some(SESSIONS_SUBDIR | ARCHIVED_SESSIONS_SUBDIR)
+        )
+        .then(|| ancestor.parent())
+        .flatten()
+    })
 }
 
 async fn read_head_summary_file(

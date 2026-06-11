@@ -541,6 +541,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_rotation_keeps_live_recorder_writable() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let store = Arc::new(LocalThreadStore::new(config, /*state_db*/ None));
+        let thread_id = ThreadId::default();
+        let live_thread = LiveThread::create(store.clone(), create_thread_params(thread_id))
+            .await
+            .expect("create live thread");
+        live_thread
+            .append_items(&[user_message_item("before failed rotation")])
+            .await
+            .expect("append before failed rotation");
+        live_thread
+            .flush()
+            .await
+            .expect("flush before failed rotation");
+
+        tokio::fs::write(
+            home.path()
+                .join(codex_rollout::ROTATED_ROLLOUT_SEGMENTS_SUBDIR),
+            "block directory creation",
+        )
+        .await
+        .expect("create rotation blocker");
+        store
+            .rotate_thread_segment(
+                thread_id,
+                RotateThreadSegmentParams {
+                    source: SessionSource::Exec,
+                    base_instructions: BaseInstructions::default(),
+                    dynamic_tools: Vec::new(),
+                    metadata: thread_metadata(),
+                    initial_items: Vec::new(),
+                    previous_segment_reference_depth: 1,
+                },
+            )
+            .await
+            .expect_err("rotation should fail before replacing the live recorder");
+
+        live_thread
+            .append_items(&[user_message_item("after failed rotation")])
+            .await
+            .expect("live recorder should remain writable");
+        live_thread
+            .flush()
+            .await
+            .expect("flush after failed rotation");
+        let rollout_path = store
+            .live_rollout_path(thread_id)
+            .await
+            .expect("live rollout path");
+        let (items, _, _) = RolloutRecorder::load_rollout_items(rollout_path.as_path())
+            .await
+            .expect("load live rollout");
+        assert!(
+            serde_json::to_string(&items)
+                .expect("serialize rollout items")
+                .contains("after failed rotation")
+        );
+    }
+
+    #[tokio::test]
     async fn live_thread_shutdown_does_not_materialize_empty_thread_metadata() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());

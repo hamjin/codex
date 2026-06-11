@@ -5,14 +5,18 @@ use chrono::DateTime;
 use chrono::NaiveDateTime;
 use chrono::Timelike;
 use chrono::Utc;
+use codex_protocol::SegmentId;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::RolloutReferenceItem;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::UserMessageEvent;
 use codex_state::BackfillStatus;
 use codex_state::ThreadMetadataBuilder;
 use pretty_assertions::assert_eq;
@@ -143,6 +147,109 @@ async fn extract_metadata_from_rollout_returns_latest_memory_mode() {
         .expect("extract");
 
     assert_eq!(outcome.memory_mode.as_deref(), Some("polluted"));
+}
+
+#[tokio::test]
+async fn extract_metadata_from_rollout_reads_referenced_preview() {
+    let dir = tempdir().expect("tempdir");
+    let codex_home = dir.path();
+    let uuid = Uuid::new_v4();
+    let id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let previous_segment_id = SegmentId::new();
+    let current_segment_id = SegmentId::new();
+    let file_name = format!("rollout-2026-01-27T12-34-56-{uuid}.jsonl");
+    let previous_path = codex_home
+        .join(crate::ROTATED_ROLLOUT_SEGMENTS_SUBDIR)
+        .join(id.to_string())
+        .join(previous_segment_id.to_string())
+        .join(&file_name);
+    let current_path = codex_home.join("sessions/2026/01/27").join(&file_name);
+    let session_meta = |segment_id| {
+        RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id,
+                segment_id: Some(segment_id),
+                forked_from_id: None,
+                parent_thread_id: None,
+                timestamp: "2026-01-27T12:34:56Z".to_string(),
+                cwd: codex_home.to_path_buf(),
+                originator: "cli".to_string(),
+                cli_version: "0.0.0".to_string(),
+                source: SessionSource::default(),
+                thread_source: None,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+                model_provider: Some("openai".to_string()),
+                base_instructions: None,
+                dynamic_tools: None,
+                memory_mode: None,
+                multi_agent_version: None,
+            },
+            git: None,
+        })
+    };
+    std::fs::create_dir_all(previous_path.parent().expect("previous parent"))
+        .expect("create previous parent");
+    let mut previous_file = File::create(&previous_path).expect("create previous rollout");
+    for item in [
+        session_meta(previous_segment_id),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "Referenced preview".to_string(),
+            ..Default::default()
+        })),
+    ] {
+        let line = RolloutLine {
+            timestamp: "2026-01-27T12:34:56Z".to_string(),
+            item,
+        };
+        writeln!(
+            previous_file,
+            "{}",
+            serde_json::to_string(&line).expect("serialize previous line")
+        )
+        .expect("write previous line");
+    }
+    std::fs::create_dir_all(current_path.parent().expect("current parent"))
+        .expect("create current parent");
+    let mut current_file = File::create(&current_path).expect("create current rollout");
+    for item in [
+        session_meta(current_segment_id),
+        RolloutItem::RolloutReference(RolloutReferenceItem {
+            rollout_path: current_path.clone(),
+            thread_id: Some(id),
+            rollout_timestamp: Some("2026-01-27T12-34-56".to_string()),
+            segment_id: Some(previous_segment_id),
+            max_depth: 2,
+            nth_user_message: None,
+            compacted_replacement_history_filter_texts: None,
+        }),
+    ] {
+        let line = RolloutLine {
+            timestamp: "2026-01-27T12:34:56Z".to_string(),
+            item,
+        };
+        writeln!(
+            current_file,
+            "{}",
+            serde_json::to_string(&line).expect("serialize current line")
+        )
+        .expect("write current line");
+    }
+    drop(current_file);
+
+    let outcome = extract_metadata_from_rollout(&current_path, "openai")
+        .await
+        .expect("extract referenced metadata");
+
+    assert_eq!(
+        outcome.metadata.first_user_message.as_deref(),
+        Some("Referenced preview")
+    );
+    assert_eq!(
+        outcome.metadata.preview.as_deref(),
+        Some("Referenced preview")
+    );
 }
 
 #[test]

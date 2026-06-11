@@ -198,13 +198,6 @@ pub(super) async fn rotate_thread_segment(
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
     };
-    if let Err(err) = old_recorder.shutdown().await {
-        warn!(
-            "failed to close previous rollout segment {} for thread {thread_id}: {err}",
-            old_rollout_path.display()
-        );
-    }
-
     let current_path = store
         .live_recorders
         .lock()
@@ -321,12 +314,41 @@ pub(super) async fn rotate_thread_segment(
         return Err(thread_store_io_error(err));
     }
 
+    if let Err(err) = old_recorder.shutdown().await {
+        restore_live_recorder_after_rotation_failure(
+            store,
+            thread_id,
+            &config,
+            old_rollout_path.as_path(),
+        )
+        .await;
+        remove_rotation_artifacts(
+            staged_rollout_path.as_path(),
+            rotated_segment_path.as_path(),
+            "previous recorder shutdown",
+        )
+        .await;
+        return Err(ThreadStoreError::Internal {
+            message: format!(
+                "failed to close previous rollout segment {} for thread {thread_id}: {err}",
+                old_rollout_path.display()
+            ),
+        });
+    }
+
     if let Err(err) = replace_live_rollout_with_staged_segment(
         staged_rollout_path.as_path(),
         old_rollout_path.as_path(),
     )
     .await
     {
+        restore_live_recorder_after_rotation_failure(
+            store,
+            thread_id,
+            &config,
+            old_rollout_path.as_path(),
+        )
+        .await;
         remove_rotation_artifacts(
             staged_rollout_path.as_path(),
             rotated_segment_path.as_path(),
@@ -336,14 +358,26 @@ pub(super) async fn rotate_thread_segment(
         return Err(err);
     }
 
-    let new_recorder = RolloutRecorder::new(
+    let new_recorder = match RolloutRecorder::new(
         &config,
         RolloutRecorderParams::resume(old_rollout_path.clone()),
     )
     .await
-    .map_err(|err| ThreadStoreError::Internal {
-        message: format!("failed to resume rotated local thread recorder: {err}"),
-    })?;
+    {
+        Ok(new_recorder) => new_recorder,
+        Err(err) => {
+            restore_live_recorder_after_rotation_failure(
+                store,
+                thread_id,
+                &config,
+                old_rollout_path.as_path(),
+            )
+            .await;
+            return Err(ThreadStoreError::Internal {
+                message: format!("failed to resume rotated local thread recorder: {err}"),
+            });
+        }
+    };
 
     let mut live_recorders = store.live_recorders.lock().await;
     let current_path = live_recorders
@@ -358,6 +392,36 @@ pub(super) async fn rotate_thread_segment(
     }
     live_recorders.insert(thread_id, new_recorder);
     Ok(())
+}
+
+async fn restore_live_recorder_after_rotation_failure(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    config: &RolloutConfig,
+    rollout_path: &Path,
+) {
+    let recovered = match RolloutRecorder::new(
+        config,
+        RolloutRecorderParams::resume(rollout_path.to_path_buf()),
+    )
+    .await
+    {
+        Ok(recovered) => recovered,
+        Err(err) => {
+            warn!(
+                "failed to restore live rollout recorder {} for thread {thread_id}: {err}",
+                rollout_path.display()
+            );
+            return;
+        }
+    };
+    let mut live_recorders = store.live_recorders.lock().await;
+    if live_recorders
+        .get(&thread_id)
+        .is_some_and(|recorder| recorder.rollout_path() == rollout_path)
+    {
+        live_recorders.insert(thread_id, recovered);
+    }
 }
 
 async fn sync_materialized_rollout_path(

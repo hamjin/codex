@@ -1274,7 +1274,7 @@ async fn test_list_threads_reads_preview_from_referenced_segment() {
         current_path.as_path(),
         ts,
         RolloutItem::RolloutReference(RolloutReferenceItem {
-            rollout_path: previous_path,
+            rollout_path: current_path.clone(),
             thread_id: Some(thread_id),
             rollout_timestamp: Some(ts.to_string()),
             segment_id: Some(previous_segment_id),

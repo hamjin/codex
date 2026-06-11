@@ -1632,13 +1632,7 @@ fn rollout_reference_history_for_snapshot(
     interrupted_marker: InterruptedTurnHistoryMarker,
 ) -> Option<InitialHistory> {
     let nth_user_message = match snapshot {
-        ForkSnapshot::TruncateBeforeNthUserMessage(nth_user_message) => {
-            let user_positions = truncation::user_message_positions_in_rollout(source_items);
-            if snapshot_state.ends_mid_turn && nth_user_message >= user_positions.len() {
-                return None;
-            }
-            nth_user_message
-        }
+        ForkSnapshot::TruncateBeforeNthUserMessage(nth_user_message) => nth_user_message,
         ForkSnapshot::Interrupted => usize::MAX,
     };
 

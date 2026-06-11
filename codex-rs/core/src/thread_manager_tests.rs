@@ -135,6 +135,46 @@ fn truncates_before_requested_user_message() {
 }
 
 #[test]
+fn segmented_mid_turn_snapshot_keeps_global_fork_boundary() {
+    let source_items = vec![
+        RolloutItem::RolloutReference(RolloutReferenceItem {
+            rollout_path: PathBuf::from("previous-segment.jsonl"),
+            thread_id: None,
+            rollout_timestamp: None,
+            segment_id: None,
+            max_depth: DEFAULT_ROLLOUT_REFERENCE_DEPTH,
+            nth_user_message: None,
+            compacted_replacement_history_filter_texts: None,
+        }),
+        RolloutItem::ResponseItem(user_msg("current partial turn")),
+    ];
+    let snapshot_state = SnapshotTurnState {
+        ends_mid_turn: true,
+        active_turn_id: None,
+        active_turn_start_index: Some(1),
+    };
+
+    let history = rollout_reference_history_for_snapshot(
+        ForkSnapshot::TruncateBeforeNthUserMessage(1),
+        PathBuf::from("current-segment.jsonl"),
+        &source_items,
+        &snapshot_state,
+        InterruptedTurnHistoryMarker::Disabled,
+    )
+    .expect("fork boundary in a referenced segment should remain reference-backed");
+
+    assert!(matches!(
+        history,
+        InitialHistory::Forked(items)
+            if items.iter().any(|item| matches!(
+                item,
+                RolloutItem::RolloutReference(reference)
+                    if reference.nth_user_message == Some(1)
+            ))
+    ));
+}
+
+#[test]
 fn out_of_range_truncation_drops_only_unfinished_suffix_mid_turn() {
     let items = vec![
         RolloutItem::ResponseItem(user_msg("u1")),

@@ -510,6 +510,24 @@ impl RolloutRecorder {
                     &db_page.items,
                 )
                 .await?;
+                if search_term.is_some()
+                    && let Some(repaired_db_page) = state_db::list_threads_db(
+                        state_db_ctx.as_deref(),
+                        codex_home,
+                        page_size,
+                        cursor,
+                        sort_key,
+                        sort_direction,
+                        allowed_sources,
+                        model_providers,
+                        cwd_filters,
+                        archived,
+                        search_term,
+                    )
+                    .await
+                {
+                    return Ok(repaired_db_page.into());
+                }
                 let page = page_from_filesystem_scan(fs_page, sort_direction, page_size, sort_key);
                 return Ok(fill_missing_thread_item_metadata_from_state_db(
                     state_db_ctx.as_deref(),
