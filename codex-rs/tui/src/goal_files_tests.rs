@@ -49,6 +49,7 @@ async fn materializes_active_paste_placeholder() {
                 Some(placeholder.to_string()),
             )],
             pending_pastes: vec![(placeholder.to_string(), "hello".to_string())],
+            ..Default::default()
         },
     )
     .await
@@ -77,6 +78,7 @@ async fn whitespace_paste_only_objective_is_empty() {
                 Some(placeholder.to_string()),
             )],
             pending_pastes: vec![(placeholder.to_string(), " \n\t".to_string())],
+            ..Default::default()
         },
     )
     .await
@@ -87,7 +89,45 @@ async fn whitespace_paste_only_objective_is_empty() {
 }
 
 #[tokio::test]
-async fn deleted_paste_placeholder_does_not_materialize_or_need_codex_home() {
+async fn materializes_local_and_remote_images() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let image_path = temp_dir.path().join("local-image.png");
+    fs::write(&image_path, b"png bytes").expect("write image");
+    let placeholder = "[Image #1]";
+    let objective = format!("Describe {placeholder}");
+    let codex_home = codex_app_server_client::AppServerPath::from_app_server("/tmp/codex");
+    let mut store = RecordingStore::default();
+
+    let objective = materialize_goal_draft(
+        &mut store,
+        Some(&codex_home),
+        GoalDraft {
+            objective: objective.clone(),
+            text_elements: vec![TextElement::new(
+                (9..9 + placeholder.len()).into(),
+                Some(placeholder.to_string()),
+            )],
+            local_images: vec![LocalImageAttachment {
+                placeholder: placeholder.to_string(),
+                path: image_path,
+            }],
+            remote_image_urls: vec!["https://example.com/goal.png".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("materialize goal draft");
+
+    assert!(objective.contains("image file: /tmp/codex/attachments/"));
+    assert!(objective.contains("Referenced image URLs:\n- https://example.com/goal.png"));
+    assert!(store.writes.iter().any(|(_, bytes)| bytes == b"png bytes"));
+}
+
+#[tokio::test]
+async fn deleted_placeholders_do_not_materialize_or_need_codex_home() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let image_path = temp_dir.path().join("local-image.png");
+    fs::write(&image_path, b"png bytes").expect("write image");
     let mut store = RecordingStore::default();
 
     let objective = materialize_goal_draft(
@@ -96,6 +136,10 @@ async fn deleted_paste_placeholder_does_not_materialize_or_need_codex_home() {
         GoalDraft {
             objective: "small goal".to_string(),
             pending_pastes: vec![("[Pasted Content 5 chars]".to_string(), "hello".to_string())],
+            local_images: vec![LocalImageAttachment {
+                placeholder: "[Image #1]".to_string(),
+                path: image_path,
+            }],
             ..Default::default()
         },
     )
