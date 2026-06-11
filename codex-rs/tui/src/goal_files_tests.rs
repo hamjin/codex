@@ -55,7 +55,7 @@ async fn materializes_active_paste_placeholder() {
     .await
     .expect("materialize goal draft");
 
-    let edit_text = objective_text_for_edit(&mut store, &reference)
+    let edit_text = objective_text_for_edit(&mut store, Some(&codex_home), &reference)
         .await
         .expect("read objective text");
     assert!(edit_text.contains(r"pasted text file: C:\Users\codex\.codex\attachments\"));
