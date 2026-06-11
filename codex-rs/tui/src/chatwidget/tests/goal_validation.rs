@@ -58,26 +58,3 @@ async fn goal_slash_command_emits_only_inserted_paste_text_element() {
     assert_eq!(draft.pending_pastes, vec![(placeholder, paste)]);
     assert_no_submit_op(&mut op_rx);
 }
-
-#[tokio::test]
-async fn queued_goal_before_thread_preserves_large_paste() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
-    chat.bottom_pane
-        .set_composer_text("/goal ".to_string(), Vec::new(), Vec::new());
-    let objective = "x".repeat(LARGE_PASTE_CHARS);
-    let placeholder = format!("[Pasted Content {} chars]", objective.chars().count());
-    chat.handle_paste(objective.clone());
-
-    submit_current_composer(&mut chat);
-    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
-    assert_no_submit_op(&mut op_rx);
-
-    let thread_id = ThreadId::new();
-    chat.thread_id = Some(thread_id);
-    chat.maybe_send_next_queued_input();
-
-    let draft = next_goal_draft(&mut rx, thread_id);
-    assert_eq!(draft.objective, placeholder);
-    assert_eq!(draft.pending_pastes, vec![(placeholder, objective)]);
-}

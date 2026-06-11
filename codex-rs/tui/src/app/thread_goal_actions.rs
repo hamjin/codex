@@ -183,81 +183,18 @@ impl App {
             }
         };
 
-        if self
-            .set_thread_goal_objective(app_server, thread_id, objective, mode)
-            .await
-        {
-            self.chat_widget.maybe_send_next_queued_input();
-        }
-    }
-
-    pub(super) async fn set_thread_goal_objective(
-        &mut self,
-        app_server: &mut AppServerSession,
-        thread_id: ThreadId,
-        objective: String,
-        mode: ThreadGoalSetMode,
-    ) -> bool {
-        let codex_home = app_server.codex_home_path(&self.config.codex_home);
-        let mode = if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
-            let result = app_server.thread_goal_get(thread_id).await;
-            if self.current_displayed_thread_id() != Some(thread_id) {
-                return false;
-            }
-
-            match result {
-                Ok(response) => match response.goal.as_ref() {
-                    Some(goal) if should_confirm_before_replacing_goal(goal) => {
-                        self.show_replace_thread_goal_confirmation(
-                            thread_id,
-                            goal_files::GoalDraft {
-                                objective,
-                                ..Default::default()
-                            },
-                        );
-                        return false;
-                    }
-                    Some(_) => ThreadGoalSetMode::ReplaceExisting,
-                    None => mode,
-                },
-                Err(err) => {
-                    self.chat_widget
-                        .add_error_message(thread_goal_error_message("read", &err));
-                    return true;
-                }
-            }
-        } else {
-            mode
-        };
-
-        let objective = match goal_files::materialize_goal_objective(
-            app_server,
-            codex_home.as_ref(),
-            objective,
-        )
-        .await
-        {
-            Ok(objective) => objective,
-            Err(err) => {
-                if self.current_displayed_thread_id() == Some(thread_id) {
-                    self.chat_widget.add_error_message(err.to_string());
-                    return true;
-                }
-                return false;
-            }
-        };
-
         let replacing_goal = matches!(mode, ThreadGoalSetMode::ReplaceExisting);
         if replacing_goal {
             let result = app_server.thread_goal_clear(thread_id).await;
 
             if let Err(err) = result {
                 if self.current_displayed_thread_id() != Some(thread_id) {
-                    return false;
+                    return;
                 }
                 self.chat_widget
                     .add_error_message(thread_goal_error_message("replace", &err));
-                return true;
+                self.chat_widget.maybe_send_next_queued_input();
+                return;
             }
         }
 
@@ -275,7 +212,7 @@ impl App {
             .thread_goal_set(thread_id, Some(objective), Some(status), token_budget)
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
-            return false;
+            return;
         }
 
         match result {
@@ -289,7 +226,7 @@ impl App {
                     .add_error_message(thread_goal_error_message(action, &err));
             }
         }
-        true
+        self.chat_widget.maybe_send_next_queued_input();
     }
 
     pub(super) async fn set_thread_goal_status(

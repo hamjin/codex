@@ -246,10 +246,6 @@ impl ChatWidget {
             .queued_user_messages
             .drain(..)
             .collect::<Vec<_>>();
-        let mut pending_pastes = queued_messages
-            .iter()
-            .flat_map(|message| message.pending_pastes.clone())
-            .collect::<Vec<_>>();
         let mut queued_history_records = self
             .input_queue
             .queued_user_message_history_records
@@ -259,14 +255,17 @@ impl ChatWidget {
             queued_messages.len(),
             UserMessageHistoryRecord::UserMessageText,
         );
-        to_merge.extend(
-            queued_messages
-                .into_iter()
-                .zip(queued_history_records.iter())
-                .map(|(message, history_record)| {
-                    user_message_for_restore(message.into_user_message(), history_record)
-                }),
-        );
+        let mut pending_pastes = Vec::new();
+        for (message, history_record) in queued_messages
+            .into_iter()
+            .zip(queued_history_records.iter())
+        {
+            pending_pastes.extend(message.pending_pastes);
+            to_merge.push(user_message_for_restore(
+                message.user_message,
+                history_record,
+            ));
+        }
         let has_existing_message = !existing_message.text.is_empty()
             || !existing_message.local_images.is_empty()
             || !existing_message.remote_image_urls.is_empty();
@@ -384,31 +383,7 @@ impl ChatWidget {
             self.input_queue.user_turn_pending_start = input_state.user_turn_pending_start;
             self.update_collaboration_mode_indicator();
             self.refresh_model_dependent_surfaces();
-            if let Some(composer) = input_state.composer {
-                let local_image_paths = composer
-                    .local_images
-                    .into_iter()
-                    .map(|img| img.path)
-                    .collect();
-                self.set_remote_image_urls(composer.remote_image_urls);
-                self.bottom_pane.set_composer_text_with_mention_bindings(
-                    composer.text,
-                    composer.text_elements,
-                    local_image_paths,
-                    composer.mention_bindings,
-                );
-                self.bottom_pane
-                    .set_composer_pending_pastes(composer.pending_pastes);
-            } else {
-                self.set_remote_image_urls(Vec::new());
-                self.bottom_pane.set_composer_text_with_mention_bindings(
-                    String::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                );
-                self.bottom_pane.set_composer_pending_pastes(Vec::new());
-            }
+            self.restore_composer_state(input_state.composer.unwrap_or_default());
             let mut pending_steer_history_records = input_state.pending_steer_history_records;
             pending_steer_history_records.resize(
                 input_state.pending_steers.len(),
@@ -449,14 +424,7 @@ impl ChatWidget {
             self.turn_lifecycle
                 .restore_running(/*running*/ false, Instant::now());
             self.input_queue.clear();
-            self.set_remote_image_urls(Vec::new());
-            self.bottom_pane.set_composer_text_with_mention_bindings(
-                String::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            );
-            self.bottom_pane.set_composer_pending_pastes(Vec::new());
+            self.restore_composer_state(Default::default());
         }
         self.turn_lifecycle
             .restore_running(self.turn_lifecycle.agent_turn_running, Instant::now());
