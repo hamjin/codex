@@ -4152,7 +4152,7 @@ async fn make_test_app_with_channels() -> (
 }
 
 #[tokio::test]
-async fn set_thread_goal_objective_materializes_long_objective_before_goal_set() -> Result<()> {
+async fn set_thread_goal_draft_materializes_long_objective_before_goal_set() -> Result<()> {
     let mut app = make_test_app().await;
     let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
@@ -4167,10 +4167,13 @@ async fn set_thread_goal_objective_materializes_long_objective_before_goal_set()
         .expect("primary thread should be registered");
     let objective = "x".repeat(MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1);
 
-    app.set_thread_goal_objective(
+    app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
-        objective.clone(),
+        crate::goal_files::GoalDraft {
+            objective: objective.clone(),
+            ..Default::default()
+        },
         crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
     )
     .await;
@@ -4214,16 +4217,17 @@ async fn set_thread_goal_objective_materializes_long_objective_before_goal_set()
     let attachments_dir = app.chat_widget.config_ref().codex_home.join("attachments");
     let attachment_count = std::fs::read_dir(&attachments_dir)?.count();
 
-    let accepted = app
-        .set_thread_goal_objective(
-            &mut app_server,
-            thread_id,
-            "x".repeat(MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1),
-            crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
-        )
-        .await;
+    app.set_thread_goal_draft(
+        &mut app_server,
+        thread_id,
+        crate::goal_files::GoalDraft {
+            objective: "x".repeat(MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1),
+            ..Default::default()
+        },
+        crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
+    )
+    .await;
 
-    assert!(!accepted);
     assert_eq!(
         std::fs::read_dir(&attachments_dir)?.count(),
         attachment_count

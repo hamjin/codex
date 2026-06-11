@@ -4,8 +4,6 @@
 //! home directory. The persisted goal objective keeps file references so later
 //! continuations can read the long inputs by path.
 
-use std::collections::HashMap;
-
 use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::ChatComposer;
 use anyhow::Context;
@@ -72,22 +70,6 @@ impl GoalFileStore for AppServerSession {
     }
 }
 
-pub(crate) async fn materialize_goal_objective(
-    store: &mut impl GoalFileStore,
-    codex_home: Option<&GoalFilePath>,
-    objective: String,
-) -> Result<String> {
-    materialize_goal_draft(
-        store,
-        codex_home,
-        GoalDraft {
-            objective,
-            ..Default::default()
-        },
-    )
-    .await
-}
-
 pub(crate) async fn materialize_goal_draft(
     store: &mut impl GoalFileStore,
     codex_home: Option<&GoalFilePath>,
@@ -109,33 +91,30 @@ pub(crate) async fn materialize_goal_draft(
         }
     }
 
-    let mut active_placeholders = active_placeholder_counts(
-        &objective,
-        &text_elements,
-        draft
-            .pending_pastes
-            .iter()
-            .map(|(placeholder, _)| placeholder.as_str()),
-    );
+    let mut active_placeholders = text_elements
+        .iter()
+        .filter_map(|element| element.placeholder(&objective))
+        .filter(|placeholder| !placeholder.is_empty())
+        .collect::<Vec<_>>();
     let mut output_dir = None;
     let mut replacements = Vec::new();
-    let mut paste_idx = 0;
     for (placeholder, text) in draft.pending_pastes.iter() {
-        if !take_active_placeholder(&mut active_placeholders, placeholder) {
+        let Some(active_idx) = active_placeholders
+            .iter()
+            .position(|active| *active == placeholder.as_str())
+        else {
             continue;
-        }
-        paste_idx += 1;
+        };
+        active_placeholders.swap_remove(active_idx);
         let path = ensure_goal_output_dir(store, codex_home, &mut output_dir)
             .await?
-            .join(format!("pasted-text-{paste_idx}.txt"));
+            .join(format!("pasted-text-{}.txt", replacements.len() + 1));
         write_goal_file(store, path.clone(), text.as_bytes().to_vec()).await?;
 
-        if !placeholder.is_empty() {
-            replacements.push((
-                placeholder.clone(),
-                format!("pasted text file: {path}. Read this file before continuing."),
-            ));
-        }
+        replacements.push((
+            placeholder.clone(),
+            format!("pasted text file: {path}. Read this file before continuing."),
+        ));
     }
 
     let (expanded_objective, _) =
@@ -219,38 +198,6 @@ pub(crate) fn objective_file_reference(path: &GoalFilePath) -> Result<String> {
         );
     }
     Ok(reference)
-}
-
-fn active_placeholder_counts<'a>(
-    objective: &str,
-    text_elements: &[TextElement],
-    placeholders: impl IntoIterator<Item = &'a str>,
-) -> HashMap<String, usize> {
-    let mut counts = placeholders
-        .into_iter()
-        .filter(|placeholder| !placeholder.is_empty())
-        .map(|placeholder| (placeholder.to_string(), 0))
-        .collect::<HashMap<_, _>>();
-    for element in text_elements {
-        if let Some(count) = element
-            .placeholder(objective)
-            .and_then(|placeholder| counts.get_mut(placeholder))
-        {
-            *count += 1;
-        }
-    }
-    counts
-}
-
-fn take_active_placeholder(counts: &mut HashMap<String, usize>, placeholder: &str) -> bool {
-    let Some(count) = counts.get_mut(placeholder) else {
-        return false;
-    };
-    if *count == 0 {
-        return false;
-    }
-    *count -= 1;
-    true
 }
 
 async fn ensure_goal_output_dir(
