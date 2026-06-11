@@ -604,7 +604,7 @@ impl Session {
         let config_for_mcp = Arc::clone(&config);
         let mcp_manager_for_mcp = Arc::clone(&mcp_manager);
         let auth_and_mcp_fut = async move {
-            let auth = auth_manager_clone.auth().await;
+            let auth = auth_manager_clone.auth_result().await?;
             let mcp_servers = mcp_manager_for_mcp
                 .effective_servers(&config_for_mcp, auth.as_ref())
                 .await;
@@ -614,7 +614,7 @@ impl Session {
                 auth.as_ref(),
             )
             .await;
-            (auth, mcp_servers, auth_statuses)
+            Ok::<_, std::io::Error>((auth, mcp_servers, auth_statuses))
         }
         .instrument(info_span!(
             "session_init.auth_mcp",
@@ -634,17 +634,13 @@ impl Session {
         ));
 
         // Join all independent futures.
-        let (
-            thread_persistence_result,
-            state_db_ctx,
-            (auth, mcp_servers, auth_statuses),
-            plugin_skill_errors,
-        ) = tokio::join!(
+        let (thread_persistence_result, state_db_ctx, auth_and_mcp_result, plugin_skill_errors) = tokio::join!(
             thread_persistence_fut,
             state_db_fut,
             auth_and_mcp_fut,
             plugin_and_skill_warmup_fut
         );
+        let (auth, mcp_servers, auth_statuses) = auth_and_mcp_result?;
 
         for err in &plugin_skill_errors {
             error!(
