@@ -2370,6 +2370,7 @@ dependencies = [
  "url",
  "which 8.0.0",
  "windows-sys 0.52.0",
+ "wiremock",
 ]
 
 [[package]]
