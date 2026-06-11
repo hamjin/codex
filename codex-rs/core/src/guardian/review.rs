@@ -991,6 +991,7 @@ fn is_transient_guardian_session_error_info(error_info: &CodexErrorInfo) -> bool
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    use codex_protocol::error::CodexErr;
     use std::time::Duration;
 
     #[test]
@@ -1093,6 +1094,23 @@ mod review_tests {
         for (outcome, expected) in outcomes {
             assert_eq!(should_retry_guardian_review(&outcome), expected);
         }
+    }
+
+    #[test]
+    fn guardian_review_retries_codex_stream_disconnect_errors() {
+        let error_event = CodexErr::Stream(
+            "WebSocket protocol error: Connection reset without closing handshake".to_string(),
+            None,
+        )
+        .to_error_event(Some("Error running remote compact task".to_string()));
+        let outcome = GuardianReviewOutcome::Error(GuardianReviewError::session_with_error_info(
+            anyhow::anyhow!(error_event.message),
+            error_event
+                .codex_error_info
+                .expect("stream disconnect should preserve structured error info"),
+        ));
+
+        assert!(should_retry_guardian_review(&outcome));
     }
 
     #[tokio::test]
