@@ -1435,7 +1435,11 @@ impl PluginRequestProcessor {
 
         self.on_effective_plugins_changed();
 
-        let plugin_mcp_servers = load_plugin_mcp_servers(result.installed_path.as_path()).await;
+        let plugin_mcp_servers = load_plugin_mcp_servers(
+            result.installed_path.as_path(),
+            auth.as_ref().map(CodexAuth::auth_mode),
+        )
+        .await;
         if !plugin_mcp_servers.is_empty() {
             self.start_plugin_mcp_oauth_logins(&config, plugin_mcp_servers)
                 .await;
@@ -1444,7 +1448,6 @@ impl PluginRequestProcessor {
         let plugin_app_declarations = load_plugin_apps(result.installed_path.as_path()).await;
         let plugin_apps =
             codex_plugin::app_connector_ids_from_declarations(&plugin_app_declarations);
-        let auth = self.auth_manager.auth().await;
         let apps_needing_auth = self
             .plugin_apps_needing_auth_for_install(
                 &config,
@@ -1553,7 +1556,11 @@ impl PluginRequestProcessor {
         self.analytics_events_client
             .track_plugin_installed(plugin_metadata);
 
-        let plugin_mcp_servers = load_plugin_mcp_servers(result.installed_path.as_path()).await;
+        let plugin_mcp_servers = load_plugin_mcp_servers(
+            result.installed_path.as_path(),
+            auth.as_ref().map(CodexAuth::auth_mode),
+        )
+        .await;
         if !plugin_mcp_servers.is_empty() {
             self.start_plugin_mcp_oauth_logins(&config, plugin_mcp_servers)
                 .await;
