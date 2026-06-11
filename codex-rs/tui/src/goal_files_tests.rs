@@ -53,7 +53,8 @@ async fn materializes_active_paste_placeholder() {
         },
     )
     .await
-    .expect("materialize goal draft");
+    .expect("materialize goal draft")
+    .objective;
 
     let edit_text = objective_text_for_edit(&mut store, Some(&codex_home), &reference)
         .await
@@ -150,7 +151,8 @@ async fn deleted_placeholders_do_not_materialize_or_need_codex_home() {
         },
     )
     .await
-    .expect("materialize plain goal draft");
+    .expect("materialize plain goal draft")
+    .objective;
 
     assert_eq!(objective, "small goal");
     assert!(store.writes.is_empty());
