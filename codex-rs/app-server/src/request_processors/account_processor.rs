@@ -171,7 +171,7 @@ impl AccountRequestProcessor {
         }
     }
 
-    async fn maybe_refresh_remote_installed_plugins_cache_for_current_config(
+    async fn maybe_refresh_plugin_caches_for_current_config(
         config_manager: &ConfigManager,
         thread_manager: &Arc<ThreadManager>,
         auth: Option<CodexAuth>,
@@ -185,20 +185,33 @@ impl AccountRequestProcessor {
             .await
         {
             Ok(config) => {
+                let plugins_input = config.plugins_config_input();
+                let plugins_manager = thread_manager.plugins_manager();
                 let refresh_thread_manager = Arc::clone(thread_manager);
                 let refresh_config_manager = config_manager.clone();
-                thread_manager
-                    .plugins_manager()
-                    .maybe_start_remote_installed_plugins_cache_refresh(
-                        &config.plugins_config_input(),
-                        auth,
-                        Some(Arc::new(move || {
-                            Self::spawn_effective_plugins_changed_task(
-                                Arc::clone(&refresh_thread_manager),
-                                refresh_config_manager.clone(),
-                            );
-                        })),
-                    );
+                plugins_manager.maybe_start_remote_installed_plugins_cache_refresh(
+                    &plugins_input,
+                    auth.clone(),
+                    Some(Arc::new(move || {
+                        Self::spawn_effective_plugins_changed_task(
+                            Arc::clone(&refresh_thread_manager),
+                            refresh_config_manager.clone(),
+                        );
+                    })),
+                );
+                tokio::spawn(async move {
+                    match plugins_manager
+                        .refresh_recommended_plugins_for_config(&plugins_input, auth.as_ref())
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(
+                            codex_core_plugins::remote::RemotePluginCatalogError::AuthRequired
+                            | codex_core_plugins::remote::RemotePluginCatalogError::UnsupportedAuthMode,
+                        ) => {}
+                        Err(err) => warn!(error = %err, "failed to refresh recommended plugins after account change"),
+                    }
+                });
             }
             Err(err) => {
                 warn!(
@@ -614,7 +627,7 @@ impl AccountRequestProcessor {
     }
 
     async fn send_login_success_notifications(&self, login_id: Option<Uuid>) {
-        Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+        Self::maybe_refresh_plugin_caches_for_current_config(
             &self.config_manager,
             &self.thread_manager,
             self.auth_manager.auth_cached(),
@@ -667,7 +680,7 @@ impl AccountRequestProcessor {
                 .await;
 
             let auth = auth_manager.auth_cached();
-            Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+            Self::maybe_refresh_plugin_caches_for_current_config(
                 &config_manager,
                 &thread_manager,
                 auth.clone(),
@@ -699,7 +712,7 @@ impl AccountRequestProcessor {
             }
         }
 
-        Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+        Self::maybe_refresh_plugin_caches_for_current_config(
             &self.config_manager,
             &self.thread_manager,
             self.auth_manager.auth_cached(),

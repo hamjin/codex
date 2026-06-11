@@ -42,3 +42,5 @@ pub use manager::PluginsConfigInput;
 pub use manager::PluginsManager;
 pub use marketplace_upgrade::ConfiguredMarketplaceUpgradeError as PluginMarketplaceUpgradeError;
 pub use marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome as PluginMarketplaceUpgradeOutcome;
+pub use remote::RecommendedPlugin;
+pub use remote::RecommendedPluginsMode;

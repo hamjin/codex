@@ -36,6 +36,7 @@ use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeError;
 use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome;
 use crate::marketplace_upgrade::configured_git_marketplace_names;
 use crate::marketplace_upgrade::upgrade_configured_git_marketplaces;
+use crate::remote::RecommendedPluginsMode;
 use crate::remote::RemoteInstalledPlugin;
 use crate::remote::RemotePluginCatalogError;
 use crate::remote::RemotePluginServiceConfig;
@@ -109,6 +110,14 @@ impl PluginsConfigInput {
 
 #[derive(Clone, PartialEq, Eq)]
 struct FeaturedPluginIdsCacheKey {
+    chatgpt_base_url: String,
+    account_id: Option<String>,
+    chatgpt_user_id: Option<String>,
+    is_workspace_account: bool,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct RecommendedPluginsCacheKey {
     chatgpt_base_url: String,
     account_id: Option<String>,
     chatgpt_user_id: Option<String>,
@@ -209,6 +218,18 @@ fn project_plugin_load_outcome_for_auth(
     _auth_mode: Option<AuthMode>,
 ) -> PluginLoadOutcome {
     outcome
+}
+
+fn recommended_plugins_cache_key(
+    config: &PluginsConfigInput,
+    auth: Option<&CodexAuth>,
+) -> RecommendedPluginsCacheKey {
+    RecommendedPluginsCacheKey {
+        chatgpt_base_url: config.chatgpt_base_url.clone(),
+        account_id: auth.and_then(CodexAuth::get_account_id),
+        chatgpt_user_id: auth.and_then(CodexAuth::get_chatgpt_user_id),
+        is_workspace_account: auth.is_some_and(CodexAuth::is_workspace_account),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,6 +341,7 @@ pub struct PluginsManager {
     codex_home: PathBuf,
     store: PluginStore,
     featured_plugin_ids_cache: RwLock<Option<CachedFeaturedPluginIds>>,
+    recommended_plugins_cache: RwLock<HashMap<RecommendedPluginsCacheKey, RecommendedPluginsMode>>,
     configured_marketplace_upgrade_state: RwLock<ConfiguredMarketplaceUpgradeState>,
     non_curated_cache_refresh_state: RwLock<NonCuratedCacheRefreshState>,
     enabled_outcome_cache: RwLock<EnabledOutcomeCache>,
@@ -371,6 +393,7 @@ impl PluginsManager {
             codex_home: codex_home.clone(),
             store: PluginStore::new(codex_home),
             featured_plugin_ids_cache: RwLock::new(None),
+            recommended_plugins_cache: RwLock::new(HashMap::new()),
             configured_marketplace_upgrade_state: RwLock::new(
                 ConfiguredMarketplaceUpgradeState::default(),
             ),
@@ -871,6 +894,60 @@ impl PluginsManager {
         .await?;
         self.write_featured_plugin_ids_cache(cache_key, &featured_plugin_ids);
         Ok(featured_plugin_ids)
+    }
+
+    pub fn recommended_plugins_mode_for_config(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+    ) -> RecommendedPluginsMode {
+        if !config.plugins_enabled || !config.remote_plugin_enabled {
+            return RecommendedPluginsMode::Legacy;
+        }
+
+        let cache_key = recommended_plugins_cache_key(config, auth);
+        let cache = match self.recommended_plugins_cache.read() {
+            Ok(cache) => cache,
+            Err(err) => err.into_inner(),
+        };
+        if let Some(cached) = cache.get(&cache_key) {
+            return cached.clone();
+        }
+        RecommendedPluginsMode::Legacy
+    }
+
+    pub async fn refresh_recommended_plugins_for_config(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+    ) -> Result<RecommendedPluginsMode, RemotePluginCatalogError> {
+        if !config.plugins_enabled || !config.remote_plugin_enabled {
+            return Ok(RecommendedPluginsMode::Legacy);
+        }
+
+        let cache_key = recommended_plugins_cache_key(config, auth);
+        let mode = match crate::remote::fetch_recommended_plugins(
+            &remote_plugin_service_config(config),
+            auth,
+        )
+        .await
+        {
+            Ok(mode) => mode,
+            Err(err) => {
+                let mut cache = match self.recommended_plugins_cache.write() {
+                    Ok(cache) => cache,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                cache.remove(&cache_key);
+                return Err(err);
+            }
+        };
+        let mut cache = match self.recommended_plugins_cache.write() {
+            Ok(cache) => cache,
+            Err(err) => err.into_inner(),
+        };
+        cache.insert(cache_key, mode.clone());
+        Ok(mode)
     }
 
     pub async fn install_plugin(
@@ -1424,18 +1501,42 @@ impl PluginsManager {
                 }
             });
 
-            let config = config.clone();
+            let config_for_featured_plugins = config.clone();
             let manager = Arc::clone(self);
+            let auth_manager_for_featured_plugins = auth_manager.clone();
             tokio::spawn(async move {
-                let auth = auth_manager.auth().await;
+                let auth = auth_manager_for_featured_plugins.auth().await;
                 if let Err(err) = manager
-                    .featured_plugin_ids_for_config(&config, auth.as_ref())
+                    .featured_plugin_ids_for_config(&config_for_featured_plugins, auth.as_ref())
                     .await
                 {
                     warn!(
                         error = %err,
                         "failed to warm featured plugin ids cache"
                     );
+                }
+            });
+
+            let config_for_recommended_plugins = config.clone();
+            let manager = Arc::clone(self);
+            tokio::spawn(async move {
+                let auth = auth_manager.auth().await;
+                match manager
+                    .refresh_recommended_plugins_for_config(
+                        &config_for_recommended_plugins,
+                        auth.as_ref(),
+                    )
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(
+                        RemotePluginCatalogError::AuthRequired
+                        | RemotePluginCatalogError::UnsupportedAuthMode,
+                    ) => {}
+                    Err(err) => warn!(
+                        error = %err,
+                        "failed to warm recommended plugins cache"
+                    ),
                 }
             });
         }

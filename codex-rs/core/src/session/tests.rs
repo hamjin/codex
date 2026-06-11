@@ -565,9 +565,9 @@ fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> T
     let router = Arc::new(ToolRouter::from_turn_context(
         &turn_context,
         crate::tools::router::ToolRouterParams {
+            tool_suggest_candidates: None,
             mcp_tools: None,
             deferred_mcp_tools: None,
-            discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
@@ -5040,6 +5040,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
         skills_outcome,
+        /*recommended_plugin_candidates*/ None,
     );
 
     let session = Session {
@@ -7115,6 +7116,7 @@ where
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
         skills_outcome,
+        /*recommended_plugin_candidates*/ None,
     ));
 
     let session = Arc::new(Session {
@@ -9586,9 +9588,9 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
     let router = ToolRouter::from_turn_context(
         &turn_context,
         crate::tools::router::ToolRouterParams {
+            tool_suggest_candidates: None,
             deferred_mcp_tools,
             mcp_tools: Some(tools),
-            discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
