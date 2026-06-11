@@ -4214,18 +4214,19 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     let attachments_dir = app.chat_widget.config_ref().codex_home.join("attachments");
     let attachment_count = std::fs::read_dir(&attachments_dir)?.count();
     let placeholder = "[Pasted Content 5 chars]";
+    let paste_draft = crate::goal_files::GoalDraft {
+        objective: format!("Use {placeholder}"),
+        text_elements: vec![TextElement::new(
+            (4..4 + placeholder.len()).into(),
+            Some(placeholder.to_string()),
+        )],
+        pending_pastes: vec![(placeholder.to_string(), "hello".to_string())],
+    };
 
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
-        crate::goal_files::GoalDraft {
-            objective: format!("Use {placeholder}"),
-            text_elements: vec![TextElement::new(
-                (4..4 + placeholder.len()).into(),
-                Some(placeholder.to_string()),
-            )],
-            pending_pastes: vec![(placeholder.to_string(), "hello".to_string())],
-        },
+        paste_draft.clone(),
         crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
     )
     .await;
@@ -4242,6 +4243,72 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
             .expect("goal should still be set")
             .objective,
         saved_objective
+    );
+
+    app.set_thread_goal_draft(
+        &mut app_server,
+        thread_id,
+        paste_draft,
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+    )
+    .await;
+    let goal = app_server
+        .thread_goal_get(thread_id)
+        .await?
+        .goal
+        .expect("replacement goal should be set");
+    let paste_path = goal
+        .objective
+        .strip_prefix("Use pasted text file: ")
+        .and_then(|text| text.strip_suffix(". Read this file before continuing."))
+        .expect("paste file reference");
+    assert_eq!(std::fs::read_to_string(paste_path)?, "hello");
+    let attachment_count = std::fs::read_dir(&attachments_dir)?.count();
+
+    let stale_paste = (placeholder.to_string(), "hello".to_string());
+    app.set_thread_goal_draft(
+        &mut app_server,
+        thread_id,
+        crate::goal_files::GoalDraft {
+            objective: "small goal".to_string(),
+            pending_pastes: vec![stale_paste],
+            ..Default::default()
+        },
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_dir(&attachments_dir)?.count(),
+        attachment_count
+    );
+
+    let whitespace_placeholder = "[Pasted Content 3 chars]";
+    app.set_thread_goal_draft(
+        &mut app_server,
+        thread_id,
+        crate::goal_files::GoalDraft {
+            objective: whitespace_placeholder.to_string(),
+            text_elements: vec![TextElement::new(
+                (0..whitespace_placeholder.len()).into(),
+                Some(whitespace_placeholder.to_string()),
+            )],
+            pending_pastes: vec![(whitespace_placeholder.to_string(), " \n\t".to_string())],
+        },
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_dir(&attachments_dir)?.count(),
+        attachment_count
+    );
+    assert_eq!(
+        app_server
+            .thread_goal_get(thread_id)
+            .await?
+            .goal
+            .expect("small goal should remain set")
+            .objective,
+        "small goal"
     );
     app_server.shutdown().await?;
     Ok(())
