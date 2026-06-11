@@ -1,5 +1,8 @@
 //! Input queue restore and thread-input snapshot behavior for `ChatWidget`.
 
+use std::collections::HashSet;
+
+use super::user_messages::remap_colliding_paste_placeholders;
 use super::*;
 
 impl ChatWidget {
@@ -256,20 +259,28 @@ impl ChatWidget {
             UserMessageHistoryRecord::UserMessageText,
         );
         let mut pending_pastes = Vec::new();
+        let mut used_paste_placeholders = HashSet::new();
         for (message, history_record) in queued_messages
             .into_iter()
             .zip(queued_history_records.iter())
         {
-            pending_pastes.extend(message.pending_pastes);
-            to_merge.push(user_message_for_restore(
-                message.user_message,
-                history_record,
-            ));
+            let (message, message_pastes) = remap_colliding_paste_placeholders(
+                user_message_for_restore(message.user_message, history_record),
+                message.pending_pastes,
+                &mut used_paste_placeholders,
+            );
+            pending_pastes.extend(message_pastes);
+            to_merge.push(message);
         }
         let has_existing_message = !existing_message.text.is_empty()
             || !existing_message.local_images.is_empty()
             || !existing_message.remote_image_urls.is_empty();
         if has_existing_message {
+            let (existing_message, composer_pending_pastes) = remap_colliding_paste_placeholders(
+                existing_message,
+                composer_pending_pastes,
+                &mut used_paste_placeholders,
+            );
             to_merge.push(existing_message);
             pending_pastes.extend(composer_pending_pastes);
         }
