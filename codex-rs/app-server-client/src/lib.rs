@@ -375,6 +375,7 @@ impl InProcessClientStartArgs {
                 version: self.client_version.clone(),
             },
             capabilities: Some(capabilities),
+            mcp_client_capabilities: None,
         }
     }
 

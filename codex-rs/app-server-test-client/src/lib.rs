@@ -1565,6 +1565,7 @@ impl CodexClient {
                             .collect(),
                     ),
                 }),
+                mcp_client_capabilities: None,
             },
         };
 

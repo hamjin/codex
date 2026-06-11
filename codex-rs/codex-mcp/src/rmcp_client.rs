@@ -7,7 +7,6 @@
 //! [`crate::connection_manager`].
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -29,6 +28,7 @@ use crate::codex_apps::normalize_codex_apps_tool_title;
 use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
 use crate::elicitation::ElicitationRequestManager;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::McpClientCapabilities;
 use crate::mcp::ToolPluginProvenance;
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
@@ -62,7 +62,6 @@ use rmcp::model::ClientCapabilities;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
-use rmcp::model::JsonObject;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RmcpTool;
 use tokio_util::sync::CancellationToken;
@@ -71,7 +70,6 @@ use tracing::warn;
 /// MCP server capability indicating that Codex should include [`SandboxState`]
 /// in tool-call request `_meta` under this key.
 pub const MCP_SANDBOX_STATE_META_CAPABILITY: &str = "codex/sandbox-state-meta";
-pub const OPENAI_FORM_CAPABILITY: &str = "openai/form";
 
 pub(crate) const MCP_TOOLS_LIST_DURATION_METRIC: &str = "codex.mcp.tools.list.duration_ms";
 pub(crate) const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str =
@@ -152,6 +150,7 @@ impl AsyncManagedClient {
         runtime_context: McpRuntimeContext,
         runtime_auth_provider: Option<SharedAuthProvider>,
         client_elicitation_capability: ElicitationCapability,
+        mcp_client_capabilities: McpClientCapabilities,
     ) -> Self {
         let tool_filter = server
             .configured_config()
@@ -204,6 +203,7 @@ impl AsyncManagedClient {
                         elicitation_requests,
                         codex_apps_tools_cache_context,
                         client_elicitation_capability,
+                        mcp_client_capabilities,
                     },
                 )
                 .await
@@ -483,18 +483,10 @@ async fn start_server_task(
         elicitation_requests,
         codex_apps_tools_cache_context,
         client_elicitation_capability,
+        mcp_client_capabilities,
     } = params;
-    let mut capabilities = ClientCapabilities::default();
-    capabilities.elicitation = Some(client_elicitation_capability);
-    capabilities.experimental = Some(BTreeMap::from([(
-        OPENAI_FORM_CAPABILITY.to_string(),
-        JsonObject::new(),
-    )]));
-    let params = InitializeRequestParams::new(
-        capabilities,
-        Implementation::new("codex-mcp-client", env!("CARGO_PKG_VERSION")).with_title("Codex"),
-    )
-    .with_protocol_version(ProtocolVersion::V_2025_06_18);
+    let params =
+        mcp_initialize_request_params(client_elicitation_capability, mcp_client_capabilities);
 
     let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
 
@@ -554,6 +546,22 @@ async fn start_server_task(
     Ok(managed)
 }
 
+fn mcp_initialize_request_params(
+    client_elicitation_capability: ElicitationCapability,
+    mcp_client_capabilities: McpClientCapabilities,
+) -> InitializeRequestParams {
+    let mut capabilities = ClientCapabilities::default();
+    capabilities.elicitation = Some(client_elicitation_capability);
+    if !mcp_client_capabilities.extensions.is_empty() {
+        capabilities.extensions = Some(mcp_client_capabilities.extensions);
+    }
+    InitializeRequestParams::new(
+        capabilities,
+        Implementation::new("codex-mcp-client", env!("CARGO_PKG_VERSION")).with_title("Codex"),
+    )
+    .with_protocol_version(ProtocolVersion::V_2025_06_18)
+}
+
 fn mcp_server_info_from_implementation(server_info: Implementation) -> McpServerInfo {
     McpServerInfo {
         name: server_info.name,
@@ -578,6 +586,7 @@ struct StartServerTaskParams {
     elicitation_requests: ElicitationRequestManager,
     codex_apps_tools_cache_context: Option<CodexAppsToolsCacheContext>,
     client_elicitation_capability: ElicitationCapability,
+    mcp_client_capabilities: McpClientCapabilities,
 }
 
 async fn make_rmcp_client(
@@ -669,6 +678,30 @@ mod tests {
     use super::*;
     use rmcp::model::JsonObject;
     use rmcp::model::Meta;
+
+    #[test]
+    fn mcp_initialize_advertises_only_negotiated_extensions() {
+        let without_extensions = mcp_initialize_request_params(
+            ElicitationCapability::default(),
+            McpClientCapabilities::default(),
+        );
+        assert_eq!(without_extensions.capabilities.extensions, None);
+
+        let openai_form: rmcp::model::ExtensionCapabilities =
+            serde_json::from_value(serde_json::json!({
+                "openai/form": {
+                    "fieldTypes": ["openai/file"]
+                }
+            }))
+            .expect("valid extension capabilities");
+        let with_extensions = mcp_initialize_request_params(
+            ElicitationCapability::default(),
+            McpClientCapabilities {
+                extensions: openai_form.clone(),
+            },
+        );
+        assert_eq!(with_extensions.capabilities.extensions, Some(openai_form));
+    }
 
     fn tool_with_connector_meta() -> RmcpTool {
         RmcpTool::new(
