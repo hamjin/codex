@@ -1,4 +1,5 @@
 use crate::OPENAI_CURATED_MARKETPLACE_NAME;
+use crate::manifest::PluginManifest;
 use crate::manifest::PluginManifestHooks;
 use crate::manifest::PluginManifestPaths;
 use crate::manifest::load_plugin_manifest;
@@ -8,6 +9,8 @@ use crate::marketplace::load_marketplace;
 use crate::marketplace::load_raw_marketplace_plugin_names;
 use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use crate::remote::RemoteInstalledPlugin;
+use crate::startup_sync::curated_plugins_repo_path;
+use crate::startup_sync::read_curated_plugins_sha;
 use crate::store::PluginStore;
 use crate::store::plugin_version_for_source;
 use codex_config::ConfigLayerStack;
@@ -673,13 +676,7 @@ async fn load_plugin(
         return loaded_plugin;
     };
 
-    loaded_plugin.is_first_party = loaded_plugin_id.marketplace_name
-        == OPENAI_CURATED_MARKETPLACE_NAME
-        && manifest
-            .interface
-            .as_ref()
-            .and_then(|interface| interface.developer_name.as_deref())
-            == Some("OpenAI");
+    loaded_plugin.is_first_party = is_openai_curated_plugin(&loaded_plugin_id, &manifest, store);
     let manifest_paths = &manifest.paths;
     match scope {
         PluginLoadScope::AllCapabilities {
@@ -739,6 +736,38 @@ async fn load_plugin(
     loaded_plugin.hook_sources = hook_sources;
     loaded_plugin.hook_load_warnings = hook_load_warnings;
     loaded_plugin
+}
+
+fn is_openai_curated_plugin(
+    plugin_id: &PluginId,
+    manifest: &PluginManifest,
+    store: &PluginStore,
+) -> bool {
+    if plugin_id.marketplace_name != OPENAI_CURATED_MARKETPLACE_NAME
+        || manifest
+            .interface
+            .as_ref()
+            .and_then(|interface| interface.developer_name.as_deref())
+            != Some("OpenAI")
+    {
+        return false;
+    }
+
+    let Some(curated_sha) = read_curated_plugins_sha(store.codex_home()) else {
+        return false;
+    };
+    let expected_version = curated_plugin_cache_version(&curated_sha);
+    if store.active_plugin_version(plugin_id).as_deref() != Some(expected_version.as_str()) {
+        return false;
+    }
+
+    let marketplace_path =
+        curated_plugins_repo_path(store.codex_home()).join(".agents/plugins/marketplace.json");
+    let Ok(marketplace_path) = AbsolutePathBuf::try_from(marketplace_path) else {
+        return false;
+    };
+    load_raw_marketplace_plugin_names(&marketplace_path)
+        .is_ok_and(|plugin_names| plugin_names.contains(&plugin_id.plugin_name))
 }
 
 fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginMcpServerConfig) {

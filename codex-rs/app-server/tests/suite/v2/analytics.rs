@@ -162,6 +162,24 @@ pub(crate) async fn wait_for_goal_event(
     .ok_or_else(|| anyhow::anyhow!("matching goal analytics event should be present"))
 }
 
+pub(crate) async fn captured_analytics_events(server: &MockServer) -> Result<Vec<Value>> {
+    let Some(requests) = server.received_requests().await else {
+        return Ok(Vec::new());
+    };
+    let mut events = Vec::new();
+    for request in &requests {
+        if request.method != "POST" || request.url.path() != "/codex/analytics-events/events" {
+            continue;
+        }
+        let payload: Value = serde_json::from_slice(&request.body)
+            .map_err(|err| anyhow::anyhow!("invalid analytics payload: {err}"))?;
+        if let Some(batch) = payload["events"].as_array() {
+            events.extend(batch.iter().cloned());
+        }
+    }
+    Ok(events)
+}
+
 async fn wait_for_matching_analytics_events(
     server: &MockServer,
     read_timeout: Duration,
@@ -170,24 +188,11 @@ async fn wait_for_matching_analytics_events(
 ) -> Result<Vec<Value>> {
     timeout(read_timeout, async {
         loop {
-            let mut matching = Vec::new();
-            let Some(requests) = server.received_requests().await else {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                continue;
-            };
-            for request in &requests {
-                if request.method != "POST"
-                    || request.url.path() != "/codex/analytics-events/events"
-                {
-                    continue;
-                }
-                let payload: Value = serde_json::from_slice(&request.body)
-                    .map_err(|err| anyhow::anyhow!("invalid analytics payload: {err}"))?;
-                let Some(events) = payload["events"].as_array() else {
-                    continue;
-                };
-                matching.extend(events.iter().filter(|event| matches(event)).cloned());
-            }
+            let matching = captured_analytics_events(server)
+                .await?
+                .into_iter()
+                .filter(|event| matches(event))
+                .collect::<Vec<_>>();
             if matching.len() >= expected_count {
                 return Ok::<Vec<Value>, anyhow::Error>(matching);
             }

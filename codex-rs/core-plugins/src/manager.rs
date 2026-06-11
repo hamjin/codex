@@ -847,6 +847,7 @@ impl PluginsManager {
             &request.plugin_name,
             self.restriction_product,
         )?;
+        self.validate_curated_marketplace_install_source(&request.marketplace_path, &resolved)?;
         self.install_resolved_plugin(resolved).await
     }
 
@@ -861,6 +862,7 @@ impl PluginsManager {
             &request.plugin_name,
             self.restriction_product,
         )?;
+        self.validate_curated_marketplace_install_source(&request.marketplace_path, &resolved)?;
         let plugin_id = resolved.plugin_id.as_key();
         // This only forwards the backend mutation before the local install flow.
         crate::remote_legacy::enable_remote_plugin(
@@ -871,6 +873,33 @@ impl PluginsManager {
         .await
         .map_err(PluginInstallError::from)?;
         self.install_resolved_plugin(resolved).await
+    }
+
+    fn validate_curated_marketplace_install_source(
+        &self,
+        marketplace_path: &AbsolutePathBuf,
+        resolved: &ResolvedMarketplacePlugin,
+    ) -> Result<(), PluginInstallError> {
+        if resolved.plugin_id.marketplace_name != OPENAI_CURATED_MARKETPLACE_NAME {
+            return Ok(());
+        }
+
+        let expected_path = curated_plugins_repo_path(self.codex_home.as_path())
+            .join(".agents/plugins/marketplace.json");
+        let expected_path = AbsolutePathBuf::try_from(expected_path)
+            .ok()
+            .and_then(|path| path.canonicalize().ok());
+        let requested_path = marketplace_path.canonicalize().ok();
+        if requested_path
+            .zip(expected_path)
+            .is_none_or(|(requested, expected)| requested != expected)
+        {
+            return Err(PluginStoreError::Invalid(format!(
+                "marketplace '{OPENAI_CURATED_MARKETPLACE_NAME}' can only be installed from the synced curated marketplace"
+            ))
+            .into());
+        }
+        Ok(())
     }
 
     async fn install_resolved_plugin(

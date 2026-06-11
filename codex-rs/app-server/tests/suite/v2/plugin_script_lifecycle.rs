@@ -21,11 +21,29 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+use super::analytics::captured_analytics_events;
 use super::analytics::mount_analytics_capture;
+use super::analytics::wait_for_analytics_event;
 use super::analytics::wait_for_analytics_events;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const CURATED_PLUGIN_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const CURATED_PLUGIN_VERSION: &str = "01234567";
+const PLUGIN_NAME: &str = "lifecycle";
 const PLUGIN_CONFIG_NAME: &str = "lifecycle@openai-curated";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PluginIdentity {
+    marketplace: &'static str,
+    developer: &'static str,
+    has_curated_provenance: bool,
+}
+
+const FIRST_PARTY_PLUGIN: PluginIdentity = PluginIdentity {
+    marketplace: "openai-curated",
+    developer: "OpenAI",
+    has_curated_provenance: true,
+};
 
 struct LifecycleFixture {
     events: Vec<Value>,
@@ -41,6 +59,7 @@ async fn plugin_script_emits_started_and_completed_lifecycle_analytics() -> Resu
         "printf 'sensitive-script-output\\n'\n",
         &["secret-argument"],
         /*interrupt*/ false,
+        FIRST_PARTY_PLUGIN,
     )
     .await?;
     assert_eq!(fixture.events.len(), 2);
@@ -76,7 +95,13 @@ async fn plugin_script_emits_started_and_completed_lifecycle_analytics() -> Resu
 
 #[tokio::test]
 async fn plugin_script_emits_failed_lifecycle_analytics() -> Result<()> {
-    let fixture = run_lifecycle_fixture("exit 7\n", &[], /*interrupt*/ false).await?;
+    let fixture = run_lifecycle_fixture(
+        "exit 7\n",
+        &[],
+        /*interrupt*/ false,
+        FIRST_PARTY_PLUGIN,
+    )
+    .await?;
     assert_eq!(fixture.events.len(), 2);
 
     let started = event_with_status(&fixture.events, "started")?;
@@ -92,7 +117,13 @@ async fn plugin_script_emits_failed_lifecycle_analytics() -> Result<()> {
 
 #[tokio::test]
 async fn interrupted_plugin_script_emits_one_cancelled_lifecycle_event() -> Result<()> {
-    let fixture = run_lifecycle_fixture("sleep 30\n", &[], /*interrupt*/ true).await?;
+    let fixture = run_lifecycle_fixture(
+        "sleep 30\n",
+        &[],
+        /*interrupt*/ true,
+        FIRST_PARTY_PLUGIN,
+    )
+    .await?;
     assert_eq!(fixture.events.len(), 2);
 
     let started = event_with_status(&fixture.events, "started")?;
@@ -105,10 +136,47 @@ async fn interrupted_plugin_script_emits_one_cancelled_lifecycle_event() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn non_first_party_plugin_scripts_do_not_emit_lifecycle_analytics() -> Result<()> {
+    for identity in [
+        PluginIdentity {
+            marketplace: "community",
+            developer: "OpenAI",
+            has_curated_provenance: false,
+        },
+        PluginIdentity {
+            marketplace: "openai-curated",
+            developer: "Example Corp",
+            has_curated_provenance: true,
+        },
+        PluginIdentity {
+            marketplace: "openai-curated",
+            developer: "OpenAI",
+            has_curated_provenance: false,
+        },
+    ] {
+        let fixture = run_lifecycle_fixture(
+            "printf 'not-first-party\\n'\n",
+            &[],
+            /*interrupt*/ false,
+            identity,
+        )
+        .await?;
+        assert!(
+            fixture.events.is_empty(),
+            "unexpected lifecycle analytics for {} plugin developed by {}",
+            identity.marketplace,
+            identity.developer
+        );
+    }
+    Ok(())
+}
+
 async fn run_lifecycle_fixture(
     script: &str,
     script_args: &[&str],
     interrupt: bool,
+    identity: PluginIdentity,
 ) -> Result<LifecycleFixture> {
     let temp = TempDir::new()?;
     let codex_home = temp.path().join("codex-home");
@@ -116,17 +184,29 @@ async fn run_lifecycle_fixture(
     std::fs::create_dir_all(&codex_home)?;
     std::fs::create_dir_all(&working_directory)?;
 
-    let plugin_root = codex_home.join("plugins/cache/openai-curated/lifecycle/local");
+    if identity.has_curated_provenance {
+        write_curated_provenance(&codex_home)?;
+    }
+    let plugin_version = if identity.has_curated_provenance {
+        CURATED_PLUGIN_VERSION
+    } else {
+        "local"
+    };
+    let plugin_root = codex_home
+        .join("plugins/cache")
+        .join(identity.marketplace)
+        .join(PLUGIN_NAME)
+        .join(plugin_version);
     std::fs::create_dir_all(plugin_root.join(".codex-plugin"))?;
     std::fs::create_dir_all(plugin_root.join("scripts"))?;
     std::fs::write(
         plugin_root.join(".codex-plugin/plugin.json"),
-        r#"{
-  "name": "lifecycle",
-  "interface": {
-    "developerName": "OpenAI"
-  }
-}"#,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "name": PLUGIN_NAME,
+            "interface": {
+                "developerName": identity.developer,
+            },
+        }))?,
     )?;
     let script_path = plugin_root.join("scripts/run.sh");
     std::fs::write(&script_path, script)?;
@@ -150,6 +230,7 @@ async fn run_lifecycle_fixture(
     )?;
     let config_path = codex_home.join("config.toml");
     let config = std::fs::read_to_string(&config_path)?;
+    let plugin_config_name = format!("{PLUGIN_NAME}@{}", identity.marketplace);
     std::fs::write(
         &config_path,
         format!(
@@ -158,7 +239,7 @@ async fn run_lifecycle_fixture(
 plugins = true
 plugin_script_lifecycle_analytics = true
 
-[plugins."{PLUGIN_CONFIG_NAME}"]
+[plugins."{plugin_config_name}"]
 enabled = true
 "#,
         ),
@@ -236,21 +317,32 @@ enabled = true
     )
     .await??;
 
-    wait_for_analytics_events(
-        &server,
-        DEFAULT_READ_TIMEOUT,
-        "codex_plugin_lifecycle_event",
-        /*expected_count*/ 2,
-    )
-    .await?;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let events = wait_for_analytics_events(
-        &server,
-        DEFAULT_READ_TIMEOUT,
-        "codex_plugin_lifecycle_event",
-        /*expected_count*/ 2,
-    )
-    .await?;
+    let events = if identity == FIRST_PARTY_PLUGIN {
+        wait_for_analytics_events(
+            &server,
+            DEFAULT_READ_TIMEOUT,
+            "codex_plugin_lifecycle_event",
+            /*expected_count*/ 2,
+        )
+        .await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        wait_for_analytics_events(
+            &server,
+            DEFAULT_READ_TIMEOUT,
+            "codex_plugin_lifecycle_event",
+            /*expected_count*/ 2,
+        )
+        .await?
+    } else {
+        let turn_event =
+            wait_for_analytics_event(&server, DEFAULT_READ_TIMEOUT, "codex_turn_event").await?;
+        assert_eq!(turn_event["event_params"]["turn_id"], turn.id);
+        captured_analytics_events(&server)
+            .await?
+            .into_iter()
+            .filter(|event| event["event_type"] == "codex_plugin_lifecycle_event")
+            .collect()
+    };
 
     Ok(LifecycleFixture {
         events,
@@ -259,6 +351,30 @@ enabled = true
         turn_id: turn.id,
         plugin_root,
     })
+}
+
+fn write_curated_provenance(codex_home: &std::path::Path) -> Result<()> {
+    let marketplace_path = codex_home.join(".tmp/plugins/.agents/plugins/marketplace.json");
+    std::fs::create_dir_all(
+        marketplace_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("marketplace path should have a parent"))?,
+    )?;
+    std::fs::write(
+        marketplace_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "name": "openai-curated",
+            "plugins": [{
+                "name": PLUGIN_NAME,
+                "source": {
+                    "source": "local",
+                    "path": "./plugins/lifecycle",
+                },
+            }],
+        }))?,
+    )?;
+    std::fs::write(codex_home.join(".tmp/plugins.sha"), CURATED_PLUGIN_SHA)?;
+    Ok(())
 }
 
 fn event_with_status<'a>(events: &'a [Value], status: &str) -> Result<&'a Value> {
