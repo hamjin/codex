@@ -94,7 +94,7 @@ async fn materializes_local_and_remote_images() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let image_path = temp_dir.path().join("local-image.png");
     fs::write(&image_path, b"png bytes").expect("write image");
-    let placeholder = "[Image #1]";
+    let placeholder = "[Image #3]";
     let objective = format!("Describe {placeholder}");
     let codex_home = codex_app_server_client::AppServerPath::from_app_server("/tmp/codex");
     let mut store = RecordingStore::default();
@@ -112,7 +112,10 @@ async fn materializes_local_and_remote_images() {
                 placeholder: placeholder.to_string(),
                 path: image_path,
             }],
-            remote_image_urls: vec!["https://example.com/goal.png".to_string()],
+            remote_image_urls: vec![
+                "https://example.com/first.png".to_string(),
+                "https://example.com/second.png".to_string(),
+            ],
             ..Default::default()
         },
     )
@@ -120,7 +123,9 @@ async fn materializes_local_and_remote_images() {
     .expect("materialize goal draft");
 
     assert!(objective.contains("image file: /tmp/codex/attachments/"));
-    assert!(objective.contains("Referenced image URLs:\n- https://example.com/goal.png"));
+    assert!(objective.contains(
+        "Referenced image URLs:\n- [Image #1]: https://example.com/first.png\n- [Image #2]: https://example.com/second.png"
+    ));
     assert!(store.writes.iter().any(|(_, bytes)| bytes == b"png bytes"));
 }
 

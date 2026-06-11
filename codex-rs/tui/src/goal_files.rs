@@ -159,7 +159,8 @@ pub(crate) async fn materialize_goal_draft(
         draft
             .remote_image_urls
             .into_iter()
-            .map(|url| format!("- {url}"))
+            .enumerate()
+            .map(|(idx, url)| format!("- [Image #{}]: {url}", idx + 1))
             .collect(),
     );
 
