@@ -59,6 +59,7 @@ async fn materializes_active_paste_placeholder() {
         .await
         .expect("read objective text");
     assert!(edit_text.contains(r"pasted text file: C:\Users\codex\.codex\attachments\"));
+    assert!(edit_text.contains("Read this file before continuing."));
     assert!(store.writes.iter().any(|(_, bytes)| bytes == b"hello"));
 }
 

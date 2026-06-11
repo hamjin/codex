@@ -65,6 +65,13 @@ fn queue_composer_text_with_tab(chat: &mut ChatWidget, text: &str) {
     chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 }
 
+fn queue_goal_with_large_paste(chat: &mut ChatWidget, paste: String) {
+    chat.bottom_pane
+        .set_composer_text("/goal ".to_string(), Vec::new(), Vec::new());
+    chat.handle_paste(paste);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+}
+
 fn recall_latest_after_clearing(chat: &mut ChatWidget) -> String {
     chat.bottom_pane
         .set_composer_text(String::new(), Vec::new(), Vec::new());
@@ -805,6 +812,49 @@ async fn queued_goal_slash_command_emits_set_goal_event_after_thread_starts() {
 
     let draft = next_goal_draft(&mut rx, thread_id);
     assert_eq!(draft.objective, "improve benchmark coverage");
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn queued_goal_slash_command_preserves_large_paste() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "turn-1");
+    let paste = "x".repeat(codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS + 1);
+
+    queue_goal_with_large_paste(&mut chat, paste.clone());
+
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+
+    let draft = next_goal_draft(&mut rx, thread_id);
+    assert_eq!(draft.pending_pastes.len(), 1);
+    assert_eq!(draft.pending_pastes[0].1, paste);
+    assert!(draft.objective.contains(&draft.pending_pastes[0].0));
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn queued_goal_slash_command_restores_large_paste_for_edit() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "turn-1");
+    let paste = "x".repeat(codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS + 1);
+
+    queue_goal_with_large_paste(&mut chat, paste.clone());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+
+    assert_eq!(chat.bottom_pane.composer_pending_pastes()[0].1, paste);
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+    submit_current_composer(&mut chat);
+
+    let draft = next_goal_draft(&mut rx, thread_id);
+    assert_eq!(draft.pending_pastes.len(), 1);
+    assert_eq!(draft.pending_pastes[0].1, paste);
     assert_no_submit_op(&mut op_rx);
 }
 

@@ -47,9 +47,10 @@ impl ChatWidget {
                 text,
                 text_elements,
                 action,
+                pending_pastes,
             } => {
                 let user_message = self.user_message_from_submission(text, text_elements);
-                self.queue_user_message_with_options(user_message, action, Vec::new());
+                self.queue_user_message_with_options(user_message, action, pending_pastes);
             }
             InputResult::Command(cmd) => {
                 self.handle_slash_command_dispatch(cmd);
