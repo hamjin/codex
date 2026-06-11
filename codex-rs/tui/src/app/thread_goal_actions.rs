@@ -124,6 +124,35 @@ impl App {
             .show_goal_edit_prompt(thread_id, goal, objective);
     }
 
+    pub(super) async fn set_thread_goal_draft(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        draft: goal_files::GoalDraft,
+        mode: ThreadGoalSetMode,
+    ) {
+        let codex_home = app_server.codex_home_path(&self.config.codex_home);
+        let result =
+            goal_files::materialize_goal_draft(app_server, codex_home.as_ref(), draft).await;
+        let objective = match result {
+            Ok(objective) => objective,
+            Err(err) => {
+                if self.current_displayed_thread_id() == Some(thread_id) {
+                    self.chat_widget.add_error_message(err.to_string());
+                    self.chat_widget.maybe_send_next_queued_input();
+                }
+                return;
+            }
+        };
+
+        if self
+            .set_thread_goal_objective(app_server, thread_id, objective, mode)
+            .await
+        {
+            self.chat_widget.maybe_send_next_queued_input();
+        }
+    }
+
     pub(super) async fn set_thread_goal_objective(
         &mut self,
         app_server: &mut AppServerSession,
@@ -284,9 +313,12 @@ impl App {
             format!("New objective: {objective}")
         };
         let replace_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-            tx.send(AppEvent::SetThreadGoalObjective {
+            tx.send(AppEvent::SetThreadGoalDraft {
                 thread_id,
-                objective: replace_objective.clone(),
+                draft: goal_files::GoalDraft {
+                    objective: replace_objective.clone(),
+                    ..Default::default()
+                },
                 mode: ThreadGoalSetMode::ReplaceExisting,
             });
         })];

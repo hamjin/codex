@@ -725,17 +725,13 @@ impl App {
             AppEvent::OpenThreadGoalEditor { thread_id } => {
                 self.open_thread_goal_editor(app_server, thread_id).await;
             }
-            AppEvent::SetThreadGoalObjective {
+            AppEvent::SetThreadGoalDraft {
                 thread_id,
-                objective,
+                draft,
                 mode,
             } => {
-                if self
-                    .set_thread_goal_objective(app_server, thread_id, objective, mode)
-                    .await
-                {
-                    self.chat_widget.maybe_send_next_queued_input();
-                }
+                self.set_thread_goal_draft(app_server, thread_id, draft, mode)
+                    .await;
             }
             AppEvent::SetThreadGoalStatus { thread_id, status } => {
                 self.set_thread_goal_status(app_server, thread_id, status)

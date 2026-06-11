@@ -25,9 +25,12 @@ impl ChatWidget {
             objective,
             /*context_label*/ None,
             Box::new(move |objective: String| {
-                tx.send(AppEvent::SetThreadGoalObjective {
+                tx.send(AppEvent::SetThreadGoalDraft {
                     thread_id,
-                    objective,
+                    draft: goal_files::GoalDraft {
+                        objective,
+                        ..Default::default()
+                    },
                     mode: crate::app_event::ThreadGoalSetMode::UpdateExisting {
                         status,
                         token_budget,
