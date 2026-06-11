@@ -2499,6 +2499,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-code-mode-client"
+version = "0.0.0"
+dependencies = [
+ "codex-code-mode-protocol",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "codex-code-mode-host"
 version = "0.0.0"
 dependencies = [
