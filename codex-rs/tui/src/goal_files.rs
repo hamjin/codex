@@ -1,8 +1,4 @@
-//! File materialization helpers for TUI goal objectives.
-//!
-//! Long objectives and pasted text are written under the app server's Codex
-//! home directory. The persisted goal objective keeps file references so later
-//! continuations can read the long inputs by path.
+//! Materializes oversized TUI goal objectives and pastes as app-server-host files.
 
 use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::ChatComposer;
@@ -15,8 +11,8 @@ use codex_protocol::user_input::TextElement;
 use uuid::Uuid;
 
 const GOAL_ATTACHMENT_DIR: &str = "attachments";
-const GOAL_FILE_PREFIX: &str = "Codex goal objective file: ";
-const GOAL_FILE_INSTRUCTION: &str = "Read that Codex-created file before continuing.";
+const GOAL_FILE_PREFIX: &str = "Read the Codex goal objective file at ";
+const GOAL_FILE_SUFFIX: &str = " before continuing.";
 const GOAL_FILE_NAME: &str = "goal-objective.md";
 
 #[derive(Clone, Debug, Default)]
@@ -50,12 +46,6 @@ pub(crate) trait GoalFileStore {
 
 pub(crate) type GoalFilePath = AppServerPath;
 
-#[derive(Debug)]
-pub(crate) struct MaterializedGoal {
-    pub(crate) objective: String,
-    pub(crate) output_dir: Option<GoalFilePath>,
-}
-
 impl GoalFileStore for AppServerSession {
     async fn create_directory(&mut self, path: GoalFilePath) -> Result<()> {
         self.fs_create_directory_all_path(&path)
@@ -80,7 +70,7 @@ pub(crate) async fn materialize_goal_draft(
     store: &mut impl GoalFileStore,
     codex_home: Option<&GoalFilePath>,
     draft: GoalDraft,
-) -> Result<MaterializedGoal> {
+) -> Result<(String, Option<GoalFilePath>)> {
     let mut objective = draft.objective;
     if objective.trim().is_empty() {
         bail!("Goal objective must not be empty.");
@@ -134,11 +124,7 @@ pub(crate) async fn materialize_goal_draft(
         write_goal_file(store, path.clone(), objective.as_bytes().to_vec()).await?;
         objective = objective_file_reference(&path)?;
     }
-
-    Ok(MaterializedGoal {
-        objective,
-        output_dir,
-    })
+    Ok((objective, output_dir))
 }
 
 pub(crate) async fn objective_text_for_edit(
@@ -161,43 +147,21 @@ pub(crate) fn objective_file_path(
     objective: &str,
     codex_home: Option<&GoalFilePath>,
 ) -> Option<GoalFilePath> {
-    let path = parse_objective_file_path(objective)?;
-    let codex_home = codex_home?;
-    let codex_home_parts = codex_home.components();
-    let path_parts = path.components();
-    let has_normalization_component =
-        |parts: &[&str]| parts.iter().any(|part| matches!(*part, "." | ".."));
-    (!codex_home_parts.is_empty()
-        && !has_normalization_component(&codex_home_parts)
-        && !has_normalization_component(&path_parts)
-        && path_parts.len() == codex_home_parts.len() + 3
-        && path_parts.starts_with(&codex_home_parts))
-    .then_some(path)
-}
-
-fn parse_objective_file_path(objective: &str) -> Option<GoalFilePath> {
-    let (path, instruction) = objective.split_once('\n')?;
-    if instruction != GOAL_FILE_INSTRUCTION {
-        return None;
-    }
-    let path = path
+    let path = objective
         .strip_prefix(GOAL_FILE_PREFIX)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())?;
-
+        .and_then(|path| path.strip_suffix(GOAL_FILE_SUFFIX))?;
     let path = AppServerPath::from_absolute_str(path)?;
     let parts = path.components();
-    let [.., attachment_dir, attachment_id, file_name] = parts.as_slice() else {
-        return None;
-    };
-    (*file_name == GOAL_FILE_NAME
-        && *attachment_dir == GOAL_ATTACHMENT_DIR
-        && Uuid::parse_str(attachment_id).is_ok())
-    .then_some(path)
+    let attachment_id = parts.get(parts.len().checked_sub(2)?)?;
+    let expected = codex_home?
+        .join(GOAL_ATTACHMENT_DIR)
+        .join(attachment_id)
+        .join(GOAL_FILE_NAME);
+    (path == expected && Uuid::parse_str(attachment_id).is_ok()).then_some(path)
 }
 
 pub(crate) fn objective_file_reference(path: &GoalFilePath) -> Result<String> {
-    let reference = format!("{GOAL_FILE_PREFIX}{path}\n{GOAL_FILE_INSTRUCTION}");
+    let reference = format!("{GOAL_FILE_PREFIX}{path}{GOAL_FILE_SUFFIX}");
     let actual_chars = reference.chars().count();
     if actual_chars > MAX_THREAD_GOAL_OBJECTIVE_CHARS {
         bail!(
