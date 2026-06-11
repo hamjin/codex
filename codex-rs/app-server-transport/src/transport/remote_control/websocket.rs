@@ -1637,6 +1637,7 @@ mod tests {
     use codex_config::types::AuthCredentialsStoreMode;
     use codex_core::test_support::auth_manager_from_auth;
     use codex_login::AuthDotJson;
+    use codex_login::AuthKeyringBackendKind;
     use codex_login::CodexAuth;
     use codex_login::save_auth;
     use codex_login::token_data::TokenData;
@@ -2006,6 +2007,7 @@ mod tests {
             codex_home.path(),
             &remote_control_auth_dot_json("stale-token"),
             AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
         )
         .expect("stale auth should save");
         let state_db = remote_control_state_runtime(&codex_home).await;
@@ -2014,6 +2016,7 @@ mod tests {
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
             /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
         )
         .await;
         let mut auth_recovery = auth_manager.unauthorized_recovery();
@@ -2024,6 +2027,7 @@ mod tests {
             codex_home.path(),
             &remote_control_auth_dot_json("fresh-token"),
             AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
         )
         .expect("fresh auth should save");
 
@@ -2098,6 +2102,7 @@ mod tests {
             codex_home.path(),
             &remote_control_auth_dot_json("stale-token"),
             AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
         )
         .expect("stale auth should save");
         let state_db = remote_control_state_runtime(&codex_home).await;
@@ -2106,6 +2111,7 @@ mod tests {
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
             /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
         )
         .await;
         let mut auth_recovery = auth_manager.unauthorized_recovery();
@@ -2118,6 +2124,7 @@ mod tests {
             codex_home.path(),
             &remote_control_auth_dot_json("fresh-token"),
             AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
         )
         .expect("fresh auth should save");
 
@@ -2222,6 +2229,7 @@ mod tests {
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
             /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
         )
         .await;
         let mut auth_recovery = auth_manager.unauthorized_recovery();
