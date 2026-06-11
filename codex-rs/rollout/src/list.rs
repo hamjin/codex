@@ -1108,7 +1108,7 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         let Some(next_reference) = reference.take() else {
             break;
         };
-        if next_reference.max_depth == 0 || next_reference.filter_fork_history {
+        if next_reference.max_depth == 0 || next_reference.nth_user_message.is_some() {
             break;
         }
         let reference_depth = next_reference.max_depth;

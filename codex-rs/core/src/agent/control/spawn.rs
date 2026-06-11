@@ -66,8 +66,7 @@ fn full_history_rollout_reference_items(
                 segment_id: source_meta.and_then(|meta| meta.meta.segment_id),
                 max_depth: DEFAULT_ROLLOUT_REFERENCE_DEPTH,
                 nth_user_message: Some(usize::MAX),
-                filter_fork_history: true,
-                developer_message_filter_texts: None,
+                compacted_replacement_history_filter_texts: None,
             },
         )))
         .collect()
@@ -496,7 +495,7 @@ impl AgentControl {
         let preserve_reference_context_item = matches!(fork_mode, SpawnAgentForkMode::FullHistory);
         for item in &mut forked_rollout_items {
             if let RolloutItem::RolloutReference(reference) = item {
-                reference.developer_message_filter_texts =
+                reference.compacted_replacement_history_filter_texts =
                     Some(multi_agent_v2_usage_hint_texts_to_filter.clone());
             }
         }

@@ -836,7 +836,7 @@ async fn spawn_agent_creates_thread_and_sends_prompt() {
 }
 
 #[tokio::test]
-async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
+async fn spawn_agent_full_history_fork_preserves_parent_items() {
     let harness = AgentControlHarness::new().await;
     let mut parent_config = harness.config.clone();
     let _ = parent_config.features.enable(Feature::MultiAgentV2);
@@ -981,7 +981,33 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
             }],
             phase: None,
         },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Parent root guidance.".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Parent subagent guidance.".to_string(),
+            }],
+            phase: None,
+        },
+        assistant_message("parent commentary", Some(MessagePhase::Commentary)),
         assistant_message("parent final answer", Some(MessagePhase::FinalAnswer)),
+        assistant_message("parent unknown phase", /*phase*/ None),
+        ResponseItem::Reasoning {
+            id: String::new(),
+            summary: Vec::new(),
+            content: None,
+            encrypted_content: None,
+        },
+        trigger_message.to_response_input_item().into(),
+        spawn_agent_call(&parent_spawn_call_id),
         ResponseItem::Message {
             id: None,
             role: "developer".to_string(),
@@ -994,7 +1020,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
     assert_eq!(
         history.raw_items(),
         &expected_history,
-        "full-history forked child history should replace parent usage hints with the child subagent hint while filtering non-final assistant/tool chatter"
+        "full-history forked child history should preserve the parent transcript up to the fork point before appending child context"
     );
     assert_eq!(
         serde_json::to_value(child_thread.codex.session.reference_context_item().await)
@@ -1443,8 +1469,7 @@ async fn spawn_agent_fork_last_n_turns_materializes_referenced_segments_impl() {
             segment_id: None,
             max_depth: DEFAULT_ROLLOUT_REFERENCE_DEPTH,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         })])
         .await;
     parent_thread

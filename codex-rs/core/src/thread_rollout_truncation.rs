@@ -237,17 +237,14 @@ pub async fn materialize_rollout_items_for_replay(
                     };
                 match RolloutRecorder::load_rollout_items(&resolved_path).await {
                     Ok((mut reference_items, _, _)) => {
-                        if reference.filter_fork_history {
-                            reference_items.retain(|item| {
-                                keep_forked_rollout_item(
-                                    item, /*preserve_reference_context_item*/ true,
-                                )
-                            });
-                        }
-                        if let Some(filter_texts) =
-                            reference.developer_message_filter_texts.as_deref()
+                        if let Some(filter_texts) = reference
+                            .compacted_replacement_history_filter_texts
+                            .as_deref()
                         {
-                            apply_developer_message_filter(&mut reference_items, filter_texts);
+                            apply_compacted_replacement_history_filter(
+                                &mut reference_items,
+                                filter_texts,
+                            );
                         }
                         let next_rollout_reference_depth = if has_prefix_truncation {
                             rollout_reference_depth
@@ -325,14 +322,10 @@ pub(crate) fn keep_forked_rollout_item(
     }
 }
 
-fn apply_developer_message_filter(rollout_items: &mut Vec<RolloutItem>, filter_texts: &[String]) {
-    rollout_items.retain(|item| {
-        !matches!(
-            item,
-            RolloutItem::ResponseItem(response_item)
-                if matches_filtered_developer_message(response_item, filter_texts)
-        )
-    });
+fn apply_compacted_replacement_history_filter(
+    rollout_items: &mut [RolloutItem],
+    filter_texts: &[String],
+) {
     for item in rollout_items {
         match item {
             RolloutItem::Compacted(compacted) => {
@@ -343,7 +336,7 @@ fn apply_developer_message_filter(rollout_items: &mut Vec<RolloutItem>, filter_t
                 }
             }
             RolloutItem::RolloutReference(reference) => {
-                reference.developer_message_filter_texts = Some(filter_texts.to_vec());
+                reference.compacted_replacement_history_filter_texts = Some(filter_texts.to_vec());
             }
             RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)

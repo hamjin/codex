@@ -263,8 +263,7 @@ async fn rollout_reference_resolves_archived_file_by_stable_thread_and_timestamp
             segment_id: None,
             max_depth: 2,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         },
     )
     .await
@@ -306,8 +305,7 @@ async fn rollout_reference_prefers_segment_id_over_live_path_with_same_thread_ti
             segment_id: Some(referenced_segment_id),
             max_depth: 2,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         },
     )
     .await
@@ -344,8 +342,7 @@ async fn rollout_reference_prefers_existing_prior_segment_path_without_segment_i
             segment_id: None,
             max_depth: 2,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         },
     )
     .await
@@ -387,8 +384,7 @@ async fn rollout_reference_resolves_rotated_segment_file_by_segment_id() {
             segment_id: Some(referenced_segment_id),
             max_depth: 2,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         },
     )
     .await
@@ -431,8 +427,7 @@ async fn rollout_reference_resolves_compressed_segment_file_by_segment_id() {
             segment_id: Some(referenced_segment_id),
             max_depth: 2,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         },
     )
     .await
@@ -1285,8 +1280,7 @@ async fn test_list_threads_reads_preview_from_referenced_segment() {
             segment_id: Some(previous_segment_id),
             max_depth: 2,
             nth_user_message: None,
-            filter_fork_history: false,
-            developer_message_filter_texts: None,
+            compacted_replacement_history_filter_texts: None,
         }),
     );
 
@@ -1312,6 +1306,85 @@ async fn test_list_threads_reads_preview_from_referenced_segment() {
     assert_eq!(
         page.items[0].first_user_message.as_deref(),
         Some("Hello from the previous segment")
+    );
+}
+
+#[tokio::test]
+async fn test_list_threads_does_not_read_preview_from_fork_reference() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let parent_uuid = Uuid::from_u128(104);
+    let child_uuid = Uuid::from_u128(105);
+    let parent_thread_id = thread_id_from_uuid(parent_uuid);
+    let child_thread_id = thread_id_from_uuid(child_uuid);
+    let parent_segment_id = SegmentId::new();
+    let child_segment_id = SegmentId::new();
+    let ts = "2025-05-04T10-30-00";
+    let parent_path = home
+        .join(crate::ROTATED_ROLLOUT_SEGMENTS_SUBDIR)
+        .join(parent_thread_id.to_string())
+        .join(parent_segment_id.to_string())
+        .join(format!("rollout-{ts}-{parent_uuid}.jsonl"));
+    let child_path = home
+        .join("sessions/2025/05/04")
+        .join(format!("rollout-{ts}-{child_uuid}.jsonl"));
+    write_session_meta(
+        parent_path.as_path(),
+        parent_thread_id,
+        parent_segment_id,
+        ts,
+    );
+    append_rollout_item(
+        parent_path.as_path(),
+        ts,
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "Parent preview".to_string(),
+            ..Default::default()
+        })),
+    );
+    write_session_meta(child_path.as_path(), child_thread_id, child_segment_id, ts);
+    append_rollout_item(
+        child_path.as_path(),
+        ts,
+        RolloutItem::RolloutReference(RolloutReferenceItem {
+            rollout_path: parent_path,
+            thread_id: Some(parent_thread_id),
+            rollout_timestamp: Some(ts.to_string()),
+            segment_id: Some(parent_segment_id),
+            max_depth: 2,
+            nth_user_message: Some(usize::MAX),
+            compacted_replacement_history_filter_texts: None,
+        }),
+    );
+    append_rollout_item(
+        child_path.as_path(),
+        ts,
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "Child preview".to_string(),
+            ..Default::default()
+        })),
+    );
+
+    let provider_filter = provider_vec(&[TEST_PROVIDER]);
+    let page = get_threads(
+        home,
+        /*page_size*/ 10,
+        /*cursor*/ None,
+        ThreadSortKey::CreatedAt,
+        INTERACTIVE_SESSION_SOURCES.as_slice(),
+        Some(provider_filter.as_slice()),
+        /*cwd_filters*/ None,
+        TEST_PROVIDER,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].preview.as_deref(), Some("Child preview"));
+    assert_eq!(
+        page.items[0].first_user_message.as_deref(),
+        Some("Child preview")
     );
 }
 
