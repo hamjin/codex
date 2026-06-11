@@ -4305,6 +4305,7 @@ async fn set_thread_goal_draft_confirms_replacement_before_materializing_paste()
                 Some(placeholder.to_string()),
             )],
             pending_pastes: vec![(placeholder.to_string(), "hello".to_string())],
+            ..Default::default()
         },
         crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
     )
