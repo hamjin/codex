@@ -50,6 +50,12 @@ pub(crate) trait GoalFileStore {
 
 pub(crate) type GoalFilePath = AppServerPath;
 
+#[derive(Debug)]
+pub(crate) struct MaterializedGoal {
+    pub(crate) objective: String,
+    pub(crate) output_dir: Option<GoalFilePath>,
+}
+
 impl GoalFileStore for AppServerSession {
     async fn create_directory(&mut self, path: GoalFilePath) -> Result<()> {
         self.fs_create_directory_all_path(&path)
@@ -74,7 +80,7 @@ pub(crate) async fn materialize_goal_draft(
     store: &mut impl GoalFileStore,
     codex_home: Option<&GoalFilePath>,
     draft: GoalDraft,
-) -> Result<String> {
+) -> Result<MaterializedGoal> {
     let mut objective = draft.objective;
     if objective.trim().is_empty() {
         bail!("Goal objective must not be empty.");
@@ -129,7 +135,10 @@ pub(crate) async fn materialize_goal_draft(
         objective = objective_file_reference(&path)?;
     }
 
-    Ok(objective)
+    Ok(MaterializedGoal {
+        objective,
+        output_dir,
+    })
 }
 
 pub(crate) async fn objective_text_for_edit(
@@ -161,6 +170,7 @@ pub(crate) fn objective_file_path(
     (!codex_home_parts.is_empty()
         && !has_normalization_component(&codex_home_parts)
         && !has_normalization_component(&path_parts)
+        && path_parts.len() == codex_home_parts.len() + 3
         && path_parts.starts_with(&codex_home_parts))
     .then_some(path)
 }
