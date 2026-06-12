@@ -3,6 +3,10 @@ use std::collections::HashSet;
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
+use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::RwLock;
+#[cfg(target_os = "macos")]
 use tokio::io::AsyncBufReadExt;
 #[cfg(target_os = "macos")]
 use tokio::process::Child;
@@ -23,6 +27,9 @@ const MAX_COLLECTED_LOG_CHARS: usize = 1_000;
 
 #[cfg(target_os = "macos")]
 mod pid_tracker;
+
+#[cfg(target_os = "macos")]
+type TrackedPids = Arc<RwLock<HashSet<i32>>>;
 
 #[cfg(target_os = "macos")]
 /// A unique macOS Seatbelt sandbox denial emitted by a process.
@@ -48,6 +55,8 @@ pub struct DenialLogger {
     pid_tracker: Option<PidTracker>,
     #[cfg(target_os = "macos")]
     log_reader: JoinHandle<VecDeque<LoggedDenial>>,
+    #[cfg(target_os = "macos")]
+    tracked_pids: TrackedPids,
 }
 
 impl DenialLogger {
@@ -69,6 +78,8 @@ impl DenialLogger {
         let stdout = log_stream.stdout.take()?;
         let stderr = log_stream.stderr.take()?;
         let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
+        let tracked_pids = TrackedPids::default();
+        let reader_tracked_pids = Arc::clone(&tracked_pids);
         let log_reader = tokio::spawn(async move {
             let mut stdout = tokio::io::BufReader::new(stdout);
             let mut stderr = tokio::io::BufReader::new(stderr);
@@ -85,7 +96,13 @@ impl DenialLogger {
                         if stdout_line.starts_with(LOG_STREAM_READY_PREFIX.as_bytes()) {
                             let _ = ready_tx.try_send(());
                         } else if let Some(denial) = parse_log_line(&stdout_line) {
-                            push_logged_denial(&mut logged_denials, &mut collected_chars, denial, max_chars);
+                            push_logged_denial(
+                                &mut logged_denials,
+                                &mut collected_chars,
+                                denial,
+                                max_chars,
+                                &reader_tracked_pids,
+                            );
                         }
                         stdout_line.clear();
                     }
@@ -115,6 +132,7 @@ impl DenialLogger {
             log_stream,
             pid_tracker: None,
             log_reader,
+            tracked_pids,
         })
     }
 
@@ -134,7 +152,7 @@ impl DenialLogger {
     #[cfg(target_os = "macos")]
     pub fn on_child_pid(&mut self, child_pid: Option<u32>) {
         if let Some(root_pid) = child_pid {
-            self.pid_tracker = PidTracker::new(root_pid as i32);
+            self.pid_tracker = PidTracker::new(root_pid as i32, Arc::clone(&self.tracked_pids));
         }
     }
 
@@ -187,19 +205,31 @@ fn push_logged_denial(
     collected_chars: &mut usize,
     logged_denial: LoggedDenial,
     max_chars: Option<usize>,
+    tracked_pids: &TrackedPids,
 ) {
     let denial_chars = logged_denial.chars;
     if let Some(max_chars) = max_chars {
         if denial_chars > max_chars {
             return;
         }
-        while *collected_chars + denial_chars > max_chars {
-            let Some(removed) = logged_denials.pop_front() else {
+        logged_denials.push_back(logged_denial);
+        *collected_chars += denial_chars;
+
+        let tracked_pids = tracked_pids
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        while *collected_chars > max_chars {
+            let removal_index = logged_denials
+                .iter()
+                .position(|logged_denial| !tracked_pids.contains(&logged_denial.pid))
+                .unwrap_or(0);
+            let Some(removed) = logged_denials.remove(removal_index) else {
                 break;
             };
             *collected_chars -= removed.chars;
         }
-        *collected_chars += denial_chars;
+        return;
     }
     logged_denials.push_back(logged_denial);
 }

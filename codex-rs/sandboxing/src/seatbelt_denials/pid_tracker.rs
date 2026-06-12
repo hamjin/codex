@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
+use super::TrackedPids;
+
 /// Tracks the (recursive) descendants of a process by using `kqueue` to watch for fork events, and
 /// `proc_listchildpids` to list the children of a process.
 pub(crate) struct PidTracker {
@@ -12,13 +14,17 @@ pub(crate) struct PidTracker {
 }
 
 impl PidTracker {
-    pub(crate) fn new(root_pid: i32) -> Option<Self> {
+    pub(crate) fn new(root_pid: i32, tracked_pids: TrackedPids) -> Option<Self> {
         if root_pid <= 0 {
             return None;
         }
 
+        if let Ok(mut pids) = tracked_pids.write() {
+            pids.insert(root_pid);
+        }
         let kq = unsafe { libc::kqueue() };
-        let handle = tokio::task::spawn_blocking(move || track_descendants(kq, root_pid));
+        let handle =
+            tokio::task::spawn_blocking(move || track_descendants(kq, root_pid, tracked_pids));
 
         Some(Self { kq, handle })
     }
@@ -114,19 +120,29 @@ fn watch_children(
     parent: i32,
     seen: &mut HashSet<i32>,
     active: &mut HashSet<i32>,
+    tracked_pids: &TrackedPids,
 ) {
     for child_pid in list_child_pids(parent) {
-        add_pid_watch(kq, child_pid, seen, active);
+        add_pid_watch(kq, child_pid, seen, active, tracked_pids);
     }
 }
 
 /// Watch `pid` and its children, updating `seen` and `active` sets.
-fn add_pid_watch(kq: libc::c_int, pid: i32, seen: &mut HashSet<i32>, active: &mut HashSet<i32>) {
+fn add_pid_watch(
+    kq: libc::c_int,
+    pid: i32,
+    seen: &mut HashSet<i32>,
+    active: &mut HashSet<i32>,
+    tracked_pids: &TrackedPids,
+) {
     if pid <= 0 {
         return;
     }
 
     let newly_seen = seen.insert(pid);
+    if newly_seen && let Ok(mut pids) = tracked_pids.write() {
+        pids.insert(pid);
+    }
     let mut should_recurse = newly_seen;
 
     if active.insert(pid) {
@@ -147,7 +163,7 @@ fn add_pid_watch(kq: libc::c_int, pid: i32, seen: &mut HashSet<i32>, active: &mu
     }
 
     if should_recurse {
-        watch_children(kq, pid, seen, active);
+        watch_children(kq, pid, seen, active, tracked_pids);
     }
 }
 const STOP_IDENT: libc::uintptr_t = 1;
@@ -184,7 +200,7 @@ fn trigger_stop_event(kq: libc::c_int) {
 }
 
 /// Put all of the above together to track all the descendants of `root_pid`.
-fn track_descendants(kq: libc::c_int, root_pid: i32) -> HashSet<i32> {
+fn track_descendants(kq: libc::c_int, root_pid: i32, tracked_pids: TrackedPids) -> HashSet<i32> {
     if kq < 0 {
         let mut seen = HashSet::new();
         seen.insert(root_pid);
@@ -201,7 +217,7 @@ fn track_descendants(kq: libc::c_int, root_pid: i32) -> HashSet<i32> {
     let mut seen: HashSet<i32> = HashSet::new();
     let mut active: HashSet<i32> = HashSet::new();
 
-    add_pid_watch(kq, root_pid, &mut seen, &mut active);
+    add_pid_watch(kq, root_pid, &mut seen, &mut active, &tracked_pids);
 
     const EVENTS_CAP: usize = 32;
     let mut events: [libc::kevent; EVENTS_CAP] =
@@ -213,7 +229,7 @@ fn track_descendants(kq: libc::c_int, root_pid: i32) -> HashSet<i32> {
             if !pid_is_alive(root_pid) {
                 break;
             }
-            add_pid_watch(kq, root_pid, &mut seen, &mut active);
+            add_pid_watch(kq, root_pid, &mut seen, &mut active, &tracked_pids);
             if active.is_empty() {
                 continue;
             }
@@ -258,7 +274,7 @@ fn track_descendants(kq: libc::c_int, root_pid: i32) -> HashSet<i32> {
             }
 
             if (ev.fflags & libc::NOTE_FORK) != 0 {
-                watch_children(kq, pid, &mut seen, &mut active);
+                watch_children(kq, pid, &mut seen, &mut active, &tracked_pids);
             }
 
             if (ev.fflags & libc::NOTE_EXIT) != 0 {
@@ -282,6 +298,10 @@ mod tests {
     use std::process::Command;
     use std::process::Stdio;
     use std::time::Duration;
+
+    fn tracked_pids() -> TrackedPids {
+        TrackedPids::default()
+    }
 
     #[test]
     fn pid_is_alive_detects_current_process() {
@@ -319,7 +339,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn pid_tracker_collects_spawned_children() {
-        let tracker = PidTracker::new(std::process::id() as i32).expect("failed to create tracker");
+        let tracked_pids = tracked_pids();
+        let tracker = PidTracker::new(std::process::id() as i32, tracked_pids.clone())
+            .expect("failed to create tracker");
 
         let mut child = Command::new("/bin/sleep")
             .arg("0.1")
@@ -329,6 +351,18 @@ mod tests {
 
         let child_pid = child.id() as i32;
         let parent_pid = std::process::id() as i32;
+
+        let mut child_was_published = false;
+        for _ in 0..100 {
+            if tracked_pids
+                .read()
+                .is_ok_and(|pids| pids.contains(&child_pid))
+            {
+                child_was_published = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         let _ = child.wait();
 
@@ -342,12 +376,17 @@ mod tests {
             seen.contains(&child_pid),
             "expected tracker to include child pid {child_pid}"
         );
+        assert!(
+            child_was_published,
+            "expected tracker to publish child pid {child_pid} before stop"
+        );
     }
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn pid_tracker_collects_bash_subshell_descendants() {
-        let tracker = PidTracker::new(std::process::id() as i32).expect("failed to create tracker");
+        let tracker = PidTracker::new(std::process::id() as i32, tracked_pids())
+            .expect("failed to create tracker");
 
         let child = Command::new("/bin/bash")
             .arg("-c")

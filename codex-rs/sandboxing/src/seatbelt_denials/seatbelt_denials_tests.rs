@@ -13,28 +13,98 @@ fn logged_denial(pid: i32, name: String) -> LoggedDenial {
     }
 }
 
+fn tracked_pids(pids: impl IntoIterator<Item = i32>) -> TrackedPids {
+    let tracked_pids = TrackedPids::default();
+    tracked_pids
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(pids);
+    tracked_pids
+}
+
 #[test]
 fn collected_logs_are_capped_at_one_thousand_characters() {
     let mut logged_denials = VecDeque::new();
     let mut collected_chars = 0;
-    let old_denial = logged_denial(1, "a".repeat(600));
-    let recent_denial = logged_denial(2, "é".repeat(500));
+    let old_denial = logged_denial(/*pid*/ 1, "a".repeat(600));
+    let recent_denial = logged_denial(/*pid*/ 2, "é".repeat(500));
+    let tracked_pids = tracked_pids([1, 2]);
 
     push_logged_denial(
         &mut logged_denials,
         &mut collected_chars,
         old_denial,
         Some(MAX_COLLECTED_LOG_CHARS),
+        &tracked_pids,
     );
     push_logged_denial(
         &mut logged_denials,
         &mut collected_chars,
         recent_denial.clone(),
         Some(MAX_COLLECTED_LOG_CHARS),
+        &tracked_pids,
     );
 
     assert_eq!(logged_denials, VecDeque::from([recent_denial]));
     assert_eq!(collected_chars, 500);
+}
+
+#[test]
+fn unrelated_denial_does_not_evict_tracked_denial() {
+    let mut logged_denials = VecDeque::new();
+    let mut collected_chars = 0;
+    let tracked_denial = logged_denial(/*pid*/ 1, "a".repeat(600));
+    let unrelated_denial = logged_denial(/*pid*/ 2, "b".repeat(500));
+    let tracked_pids = tracked_pids([1]);
+
+    push_logged_denial(
+        &mut logged_denials,
+        &mut collected_chars,
+        tracked_denial.clone(),
+        Some(MAX_COLLECTED_LOG_CHARS),
+        &tracked_pids,
+    );
+    push_logged_denial(
+        &mut logged_denials,
+        &mut collected_chars,
+        unrelated_denial,
+        Some(MAX_COLLECTED_LOG_CHARS),
+        &tracked_pids,
+    );
+
+    assert_eq!(logged_denials, VecDeque::from([tracked_denial]));
+    assert_eq!(collected_chars, 600);
+}
+
+#[test]
+fn newly_discovered_descendant_is_protected_from_unrelated_noise() {
+    let mut logged_denials = VecDeque::new();
+    let mut collected_chars = 0;
+    let descendant_denial = logged_denial(/*pid*/ 2, "a".repeat(400));
+    let unrelated_denial = logged_denial(/*pid*/ 3, "b".repeat(700));
+    let tracked_pids = tracked_pids([1]);
+
+    push_logged_denial(
+        &mut logged_denials,
+        &mut collected_chars,
+        descendant_denial.clone(),
+        Some(MAX_COLLECTED_LOG_CHARS),
+        &tracked_pids,
+    );
+    tracked_pids
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(2);
+    push_logged_denial(
+        &mut logged_denials,
+        &mut collected_chars,
+        unrelated_denial,
+        Some(MAX_COLLECTED_LOG_CHARS),
+        &tracked_pids,
+    );
+
+    assert_eq!(logged_denials, VecDeque::from([descendant_denial]));
+    assert_eq!(collected_chars, 400);
 }
 
 #[test]

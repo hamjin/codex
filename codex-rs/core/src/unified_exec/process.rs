@@ -33,7 +33,8 @@ use super::UnifiedExecError;
 use super::head_tail_buffer::HeadTailBuffer;
 use super::process_state::ProcessState;
 
-const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
+const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(250);
+const LOCAL_OUTPUT_DRAIN_GRACE_PERIOD: Duration = Duration::from_millis(25);
 pub(crate) trait SpawnLifecycle: std::fmt::Debug + Send + Sync {
     /// Returns file descriptors that must stay open across the child `exec()`.
     ///
@@ -358,7 +359,6 @@ impl UnifiedExecProcess {
             managed.output_tx.clone(),
         );
 
-        let mut state_rx = managed.state_rx.clone();
         tokio::spawn({
             let state_tx = managed.state_tx.clone();
             let cancellation_token = managed.cancellation_token.clone();
@@ -369,21 +369,32 @@ impl UnifiedExecProcess {
             let output_closed_notify = Arc::clone(&managed.output_closed_notify);
             async move {
                 let exit_code = exit_rx.await.ok();
-                let _ = output_task.await;
+                let state = state_tx.borrow().clone();
+                let _ = state_tx.send_replace(state.exited(exit_code));
+
+                let mut output_task = output_task;
+                if tokio::time::timeout(LOCAL_OUTPUT_DRAIN_GRACE_PERIOD, &mut output_task)
+                    .await
+                    .is_err()
+                {
+                    output_task.abort();
+                    let _ = output_task.await;
+                }
                 append_seatbelt_denials(denial_logger, &output_buffer, &output_notify, &output_tx)
                     .await;
                 output_closed.store(true, Ordering::Release);
                 output_closed_notify.notify_waiters();
-                let state = state_tx.borrow().clone();
-                let _ = state_tx.send_replace(state.exited(exit_code));
                 cancellation_token.cancel();
             }
         });
 
-        if tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, state_rx.changed())
-            .await
-            .is_ok()
-        {
+        let _ = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, async {
+            while !managed.output_closed.load(Ordering::Acquire) {
+                managed.output_closed_notify.notified().await;
+            }
+        })
+        .await;
+        if managed.output_closed.load(Ordering::Acquire) {
             managed.check_for_sandbox_denial().await?;
         }
         Ok(managed)
@@ -534,6 +545,12 @@ impl UnifiedExecProcess {
                 };
             }
         })
+    }
+
+    fn signal_exit(&self, exit_code: Option<i32>) {
+        let state = self.state_rx.borrow().clone();
+        let _ = self.state_tx.send_replace(state.exited(exit_code));
+        self.cancellation_token.cancel();
     }
 }
 
