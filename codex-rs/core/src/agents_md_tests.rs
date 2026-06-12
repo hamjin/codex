@@ -209,7 +209,7 @@ fn primary_project_provenance(
     cwd: AbsolutePathBuf,
 ) -> InstructionProvenance {
     InstructionProvenance::Project {
-        path,
+        source_path: path,
         environment: primary_project_environment_source("local", cwd),
     }
 }
@@ -466,8 +466,11 @@ async fn read_agents_md_propagates_metadata_errors() {
         failure: InjectedFailure::Metadata(io::ErrorKind::PermissionDenied),
     };
 
-    let environment = primary_project_environment_source("local", config.cwd.clone());
-    let err = read_agents_md_from_filesystem(&mut config.config, &fs, &environment)
+    let environment = ProjectEnvironment {
+        filesystem: Arc::new(fs),
+        source: primary_project_environment_source("local", config.cwd.clone()),
+    };
+    let err = read_agents_md(&mut config.config, &environment)
         .await
         .expect_err("metadata error");
 
@@ -484,8 +487,11 @@ async fn read_agents_md_propagates_read_errors() {
         failure: InjectedFailure::Read(io::ErrorKind::PermissionDenied),
     };
 
-    let environment = primary_project_environment_source("local", config.cwd.clone());
-    let err = read_agents_md_from_filesystem(&mut config.config, &fs, &environment)
+    let environment = ProjectEnvironment {
+        filesystem: Arc::new(fs),
+        source: primary_project_environment_source("local", config.cwd.clone()),
+    };
+    let err = read_agents_md(&mut config.config, &environment)
         .await
         .expect_err("read error");
 
@@ -502,8 +508,11 @@ async fn read_agents_md_ignores_files_removed_after_discovery() {
         failure: InjectedFailure::Read(io::ErrorKind::NotFound),
     };
 
-    let environment = primary_project_environment_source("local", config.cwd.clone());
-    let loaded = read_agents_md_from_filesystem(&mut config.config, &fs, &environment)
+    let environment = ProjectEnvironment {
+        filesystem: Arc::new(fs),
+        source: primary_project_environment_source("local", config.cwd.clone()),
+    };
+    let loaded = read_agents_md(&mut config.config, &environment)
         .await
         .expect("removed file is recoverable");
 
