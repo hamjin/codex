@@ -87,6 +87,8 @@ pub enum TryStartTurnIfIdleRejectionReason {
     /// Another turn or task is active, or the idle reservation was lost before
     /// the automatic turn could start.
     Busy,
+    /// The turn context could not be created for the current thread settings.
+    TurnContextUnavailable,
 }
 
 /// Rejection returned when an extension asks to start automatic idle work but
@@ -452,7 +454,7 @@ impl CodexThread {
             ));
         }
 
-        let turn_context = self.codex.session.new_default_turn().await;
+        let turn_context = self.codex.session.new_default_turn().await?;
         if self.codex.session.reference_context_item().await.is_none() {
             self.codex
                 .session

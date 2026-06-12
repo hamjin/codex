@@ -263,7 +263,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
         ctx: &ToolCtx,
     ) -> Result<UnifiedExecProcess, ToolError> {
         let base_command = &req.command;
-        let session_shell = ctx.session.user_shell();
         let (file_system_sandbox_policy, _) = attempt.permissions.to_runtime_permissions();
         let launch_sandbox_permissions = sandbox_permissions_preserving_denied_reads(
             req.sandbox_permissions,
@@ -302,9 +301,19 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
         let command = if environment_is_remote {
             base_command.to_vec()
         } else {
+            let shell = ctx
+                .turn
+                .environments
+                .turn_environments
+                .iter()
+                .find(|environment| Arc::ptr_eq(&environment.environment, &req.environment))
+                .map(|environment| &environment.shell)
+                .ok_or_else(|| {
+                    ToolError::Rejected("the selected environment is unavailable".to_string())
+                })?;
             maybe_wrap_shell_lc_with_snapshot(
                 base_command,
-                session_shell.as_ref(),
+                shell,
                 &req.cwd,
                 &explicit_env_overrides,
                 &env,
@@ -317,7 +326,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             attempt.sandbox,
             attempt.windows_sandbox_level,
         );
-        let command = if matches!(session_shell.shell_type, ShellType::PowerShell) {
+        let command = if matches!(req.shell_type, ShellType::PowerShell) {
             prefix_powershell_script_with_utf8(&command)
         } else {
             command

@@ -44,6 +44,7 @@ use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::TokenUsage;
@@ -465,15 +466,33 @@ impl Session {
             return;
         }
 
-        {
+        let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return;
             }
-            *active_turn = Some(ActiveTurn::default());
-        }
+            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            Arc::clone(&active_turn.turn_state)
+        };
 
-        let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
+        let turn_context = match self.new_default_turn_with_sub_id(sub_id.clone()).await {
+            Ok(turn_context) => turn_context,
+            Err(err) => {
+                let mut active_turn = self.active_turn.lock().await;
+                if active_turn.as_ref().is_some_and(|active_turn| {
+                    active_turn.task.is_none() && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                }) {
+                    *active_turn = None;
+                }
+                drop(active_turn);
+                self.send_event_raw(Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+                })
+                .await;
+                return;
+            }
+        };
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
         self.start_task(turn_context, Vec::new(), RegularTask::new())

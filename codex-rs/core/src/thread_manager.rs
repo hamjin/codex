@@ -643,7 +643,6 @@ impl ThreadManager {
             options.parent_trace,
             options.environments,
             options.thread_extension_init,
-            /*user_shell_override*/ None,
         ))
         .await
     }
@@ -732,7 +731,6 @@ impl ThreadManager {
             parent_trace,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ None,
         ))
         .await
     }
@@ -740,7 +738,7 @@ impl ThreadManager {
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
         &self,
         config: Config,
-        user_shell_override: crate::shell::Shell,
+        _user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
@@ -759,7 +757,6 @@ impl ThreadManager {
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ Some(user_shell_override),
         ))
         .await
     }
@@ -769,7 +766,7 @@ impl ThreadManager {
         config: Config,
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
-        user_shell_override: crate::shell::Shell,
+        _user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
         let environments = default_thread_environment_selections(
@@ -795,7 +792,6 @@ impl ThreadManager {
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ Some(user_shell_override),
         ))
         .await
     }
@@ -964,7 +960,6 @@ impl ThreadManager {
             parent_trace,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ None,
         ))
         .await
     }
@@ -1220,7 +1215,6 @@ impl ThreadManagerState {
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ None,
         ))
         .await
     }
@@ -1257,7 +1251,6 @@ impl ThreadManagerState {
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ None,
         ))
         .await
     }
@@ -1295,7 +1288,6 @@ impl ThreadManagerState {
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*user_shell_override*/ None,
         ))
         .await
     }
@@ -1316,7 +1308,6 @@ impl ThreadManagerState {
         parent_trace: Option<W3cTraceContext>,
         environments: Vec<TurnEnvironmentSelection>,
         thread_extension_init: ExtensionDataInit,
-        user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_thread_with_source(
             config,
@@ -1334,7 +1325,6 @@ impl ThreadManagerState {
             parent_trace,
             environments,
             thread_extension_init,
-            user_shell_override,
         ))
         .await
     }
@@ -1357,7 +1347,6 @@ impl ThreadManagerState {
         parent_trace: Option<W3cTraceContext>,
         environments: Vec<TurnEnvironmentSelection>,
         thread_extension_init: ExtensionDataInit,
-        user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if let InitialHistory::Resumed(resumed) = &initial_history {
@@ -1423,7 +1412,6 @@ impl ThreadManagerState {
             inherited_shell_snapshot,
             inherited_exec_policy,
             parent_rollout_thread_trace,
-            user_shell_override,
             parent_trace,
             environment_selections,
             thread_extension_init,

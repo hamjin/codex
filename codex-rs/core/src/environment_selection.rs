@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
@@ -65,36 +64,24 @@ pub(crate) async fn resolve_environment_selections(
     environment_manager: &EnvironmentManager,
     environments: &[TurnEnvironmentSelection],
 ) -> CodexResult<ResolvedTurnEnvironments> {
-    let mut seen_environment_ids = HashSet::with_capacity(environments.len());
     let mut turn_environments = Vec::with_capacity(environments.len());
     for selected_environment in environments {
-        if !seen_environment_ids.insert(selected_environment.environment_id.as_str()) {
-            return Err(CodexErr::InvalidRequest(format!(
-                "duplicate turn environment id `{}`",
-                selected_environment.environment_id
-            )));
-        }
         let environment_id = selected_environment.environment_id.clone();
         let environment = environment_manager
             .get_environment(&environment_id)
             .ok_or_else(|| {
-                CodexErr::InvalidRequest(format!("unknown turn environment id `{environment_id}`"))
+                CodexErr::Fatal(format!("environment `{environment_id}` is unavailable"))
             })?;
-        let shell = match environment.info().await {
-            Ok(info) => match Shell::from_environment_shell_info(info.shell) {
-                Ok(shell) => Some(shell),
-                Err(err) => {
-                    tracing::warn!(
-                        "failed to resolve shell for environment `{environment_id}`: {err}"
-                    );
-                    None
-                }
-            },
-            Err(err) => {
-                tracing::warn!("failed to get info for environment `{environment_id}`: {err}");
-                None
-            }
-        };
+        let info = environment.info().await.map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to get info for environment `{environment_id}`: {err}"
+            ))
+        })?;
+        let shell = Shell::from_environment_shell_info(info.shell).map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to resolve shell for environment `{environment_id}`: {err}"
+            ))
+        })?;
         turn_environments.push(TurnEnvironment {
             environment_id,
             environment,

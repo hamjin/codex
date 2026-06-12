@@ -31,13 +31,6 @@ pub(super) async fn spawn_review_thread(
         .models_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await;
-    let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
-        codex_tools::unified_exec_feature_mode_for_features(review_features.get()),
-        crate::tools::tool_user_shell_type(sess.services.user_shell.as_ref()),
-        sess.services.shell_zsh_path.as_ref(),
-        sess.services.main_execve_wrapper_exe.as_ref(),
-    );
-
     let review_prompt = resolved.prompt.clone();
     let provider = parent_turn_context.provider.clone();
     let auth_manager = parent_turn_context.auth_manager.clone();
@@ -124,7 +117,6 @@ pub(super) async fn spawn_review_thread(
         thread_source: parent_turn_context.thread_source.clone(),
         environments: parent_turn_context.environments.clone(),
         available_models,
-        unified_exec_shell_mode,
         features: review_features,
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         current_date: parent_turn_context.current_date.clone(),

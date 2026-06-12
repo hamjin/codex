@@ -45,6 +45,7 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::unified_exec::shell_mode_for_turn_environment;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_image_generation_tool;
@@ -76,7 +77,6 @@ use codex_tools::ToolExecutor;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
-use codex_tools::UnifiedExecShellMode;
 use codex_tools::can_request_original_image_detail;
 use codex_tools::collect_code_mode_exec_prompt_tool_definitions;
 use codex_tools::collect_request_plugin_install_entries;
@@ -617,14 +617,17 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
 }
 
 fn unified_exec_should_include_shell_parameter(turn_context: &TurnContext) -> bool {
-    !matches!(
-        &turn_context.unified_exec_shell_mode,
-        UnifiedExecShellMode::ZshFork(_)
-    ) || turn_context
+    turn_context
         .environments
         .turn_environments
         .iter()
-        .any(|environment| environment.environment.is_remote())
+        .filter(|environment| !environment.environment.is_remote())
+        .any(|environment| {
+            matches!(
+                shell_mode_for_turn_environment(turn_context, environment),
+                codex_tools::UnifiedExecShellMode::Direct
+            )
+        })
 }
 
 fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {

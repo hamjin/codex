@@ -104,7 +104,6 @@ pub(crate) async fn run_codex_thread_interactive(
         dynamic_tools: Vec::new(),
         metrics_service_name: None,
         inherited_shell_snapshot: None,
-        user_shell_override: None,
         inherited_exec_policy: Some(Arc::clone(&parent_session.services.exec_policy)),
         parent_rollout_thread_trace: codex_rollout_trace::ThreadTraceContext::disabled(),
         parent_trace: None,

@@ -84,14 +84,21 @@ impl ShellCommandHandler {
 
     pub(super) fn to_exec_params(
         params: &ShellCommandToolCallParams,
-        session: &crate::session::session::Session,
         turn_context: &TurnContext,
         thread_id: ThreadId,
         allow_login_shell: bool,
     ) -> Result<ExecParams, FunctionCallError> {
-        let shell = session.user_shell();
+        let shell = turn_context
+            .environments
+            .primary()
+            .map(|environment| &environment.shell)
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "the primary environment is unavailable".to_string(),
+                )
+            })?;
         let use_login_shell = Self::resolve_use_login_shell(params.login, allow_login_shell)?;
-        let command = Self::base_command(shell.as_ref(), &params.command, use_login_shell);
+        let command = Self::base_command(shell, &params.command, use_login_shell);
         #[allow(deprecated)]
         let cwd = turn_context.resolve_path(params.workdir.clone());
 
@@ -182,12 +189,14 @@ impl ShellCommandHandler {
         let prefix_rule = params.prefix_rule.clone();
         let exec_params = Self::to_exec_params(
             &params,
-            session.as_ref(),
             turn.as_ref(),
             session.thread_id,
             turn.config.permissions.allow_login_shell,
         )?;
-        let shell_type = Some(session.user_shell().shell_type);
+        let shell_type = turn
+            .environments
+            .primary()
+            .map(|environment| environment.shell.shell_type);
         run_exec_like(RunExecLikeArgs {
             tool_name,
             exec_params,

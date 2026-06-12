@@ -3,6 +3,7 @@ use crate::SkillLoadOutcome;
 use crate::agents_md::LoadedAgentsMd;
 use crate::config::GhostSnapshotConfig;
 use crate::environment_selection::ResolvedTurnEnvironments;
+use crate::shell::Shell;
 use codex_core_skills::HostLoadedSkills;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
@@ -40,7 +41,7 @@ pub(crate) struct TurnEnvironment {
     pub(crate) environment_id: String,
     pub(crate) environment: Arc<Environment>,
     pub(crate) cwd: AbsolutePathBuf,
-    pub(crate) shell: Option<shell::Shell>,
+    pub(crate) shell: Shell,
 }
 
 impl TurnEnvironment {
@@ -91,7 +92,6 @@ pub struct TurnContext {
     pub(crate) windows_sandbox_level: WindowsSandboxLevel,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) available_models: Vec<ModelPreset>,
-    pub(crate) unified_exec_shell_mode: UnifiedExecShellMode,
     pub features: ManagedFeatures,
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
@@ -260,7 +260,6 @@ impl TurnContext {
             windows_sandbox_level: self.windows_sandbox_level,
             shell_environment_policy: self.shell_environment_policy.clone(),
             available_models,
-            unified_exec_shell_mode: self.unified_exec_shell_mode.clone(),
             features,
             ghost_snapshot: self.ghost_snapshot.clone(),
             final_output_json_schema: self.final_output_json_schema.clone(),
@@ -463,9 +462,6 @@ impl Session {
         provider: ModelProviderInfo,
         session_configuration: &SessionConfiguration,
         multi_agent_version: MultiAgentVersion,
-        user_shell: &shell::Shell,
-        shell_zsh_path: Option<&PathBuf>,
-        main_execve_wrapper_exe: Option<&PathBuf>,
         per_turn_config: Config,
         model_info: ModelInfo,
         models_manager: &SharedModelsManager,
@@ -488,13 +484,6 @@ impl Session {
         let provider_for_context = create_model_provider(provider, auth_manager);
         let session_telemetry_for_context = session_telemetry;
         let available_models = models_manager.try_list_models().unwrap_or_default();
-        let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
-            codex_tools::unified_exec_feature_mode_for_features(per_turn_config.features.get()),
-            crate::tools::tool_user_shell_type(user_shell),
-            shell_zsh_path,
-            main_execve_wrapper_exe,
-        );
-
         let mut per_turn_config = per_turn_config;
         let tool_mode = model_info.tool_mode.unwrap_or_else(|| {
             if per_turn_config.features.enabled(Feature::CodeModeOnly) {
@@ -563,7 +552,6 @@ impl Session {
             windows_sandbox_level: session_configuration.windows_sandbox_level,
             shell_environment_policy: per_turn_config.permissions.shell_environment_policy.clone(),
             available_models,
-            unified_exec_shell_mode,
             features: per_turn_config.features.clone(),
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
@@ -643,25 +631,38 @@ impl Session {
         };
 
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
-        self.maybe_refresh_shell_snapshot_for_cwd(
-            &previous_cwd,
-            session_configuration.cwd(),
-            &codex_home,
-            &session_source,
-        );
 
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
         }
 
-        Ok(self
+        let turn_context = self
             .new_turn_from_configuration(
-                sub_id,
+                sub_id.clone(),
                 session_configuration,
                 updates.final_output_json_schema,
             )
-            .await)
+            .await;
+        match turn_context {
+            Ok(turn_context) => {
+                self.maybe_refresh_shell_snapshot_for_turn_environment(
+                    &previous_cwd,
+                    turn_context.environments.primary(),
+                    &codex_home,
+                    &session_source,
+                );
+                Ok(turn_context)
+            }
+            Err(err) => {
+                self.send_event_raw(Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+                })
+                .await;
+                Err(err)
+            }
+        }
     }
 
     async fn new_turn_from_configuration(
@@ -669,7 +670,7 @@ impl Session {
         sub_id: String,
         session_configuration: SessionConfiguration,
         final_output_json_schema: Option<Option<Value>>,
-    ) -> Arc<TurnContext> {
+    ) -> CodexResult<Arc<TurnContext>> {
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
@@ -683,7 +684,7 @@ impl Session {
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
-    ) -> Arc<TurnContext> {
+    ) -> CodexResult<Arc<TurnContext>> {
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
@@ -699,16 +700,17 @@ impl Session {
         session_configuration: SessionConfiguration,
         final_output_json_schema: Option<Option<Value>>,
         multi_agent_runtime: TurnMultiAgentRuntime,
-    ) -> Arc<TurnContext> {
-        let turn_environments = crate::environment_selection::resolve_environment_selections(
+    ) -> CodexResult<Arc<TurnContext>> {
+        let mut turn_environments = crate::environment_selection::resolve_environment_selections(
             self.services.environment_manager.as_ref(),
             session_configuration.environment_selections(),
         )
-        .await
-        .unwrap_or_else(|err| {
-            warn!("failed to resolve turn environments: {err}");
-            ResolvedTurnEnvironments::default()
-        });
+        .await?;
+        for turn_environment in &mut turn_environments.turn_environments {
+            if !turn_environment.environment.is_remote() {
+                turn_environment.shell.shell_snapshot = self.services.shell_snapshot_tx.subscribe();
+            }
+        }
         let primary_turn_environment = turn_environments.primary().cloned();
         let cwd = primary_turn_environment
             .as_ref()
@@ -763,9 +765,6 @@ impl Session {
             session_configuration.provider.clone(),
             &session_configuration,
             multi_agent_version,
-            self.services.user_shell.as_ref(),
-            self.services.shell_zsh_path.as_ref(),
-            self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
             model_info,
             &self.services.models_manager,
@@ -797,7 +796,7 @@ impl Session {
         {
             turn_context.turn_metadata_state.spawn_git_enrichment_task();
         }
-        turn_context
+        Ok(turn_context)
     }
 
     pub(crate) async fn maybe_emit_unknown_model_warning_for_turn(&self, tc: &TurnContext) {
@@ -815,12 +814,15 @@ impl Session {
         }
     }
 
-    pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
+    pub(crate) async fn new_default_turn(&self) -> CodexResult<Arc<TurnContext>> {
         self.new_default_turn_with_sub_id(self.next_internal_sub_id())
             .await
     }
 
-    pub(crate) async fn new_default_turn_with_sub_id(&self, sub_id: String) -> Arc<TurnContext> {
+    pub(crate) async fn new_default_turn_with_sub_id(
+        &self,
+        sub_id: String,
+    ) -> CodexResult<Arc<TurnContext>> {
         let session_configuration = self.default_turn_configuration().await;
         self.new_turn_from_configuration(
             sub_id,
@@ -833,7 +835,7 @@ impl Session {
     pub(crate) async fn new_startup_prewarm_turn_with_sub_id(
         &self,
         sub_id: String,
-    ) -> Arc<TurnContext> {
+    ) -> CodexResult<Arc<TurnContext>> {
         let session_configuration = self.default_turn_configuration().await;
         self.new_startup_prewarm_turn_from_configuration(sub_id, session_configuration)
             .await

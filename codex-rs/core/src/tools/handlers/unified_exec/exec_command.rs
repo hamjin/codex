@@ -36,9 +36,9 @@ use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
 use super::ExecCommandArgs;
 use super::ExecCommandEnvironmentArgs;
-use super::get_command;
+use super::get_command_for_environment;
 use super::post_unified_exec_tool_use_payload;
-use super::shell_mode_for_environment;
+use super::shell_mode_for_turn_environment;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
@@ -140,6 +140,12 @@ impl ExecCommandHandler {
         let environment = Arc::clone(&turn_environment.environment);
         let fs = environment.get_filesystem();
         let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &cwd)?;
+        if environment.is_remote() && args.shell.is_some() {
+            return Err(FunctionCallError::RespondToModel(
+                "`shell` is not supported for remote environments; omit `shell` to use the environment shell."
+                    .to_string(),
+            ));
+        }
         let hook_command = args.cmd.clone();
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
@@ -149,11 +155,10 @@ impl ExecCommandHandler {
         )
         .await;
         let process_id = manager.allocate_process_id().await;
-        let shell_mode =
-            shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
-        let resolved_command = get_command(
+        let shell_mode = shell_mode_for_turn_environment(turn.as_ref(), turn_environment);
+        let resolved_command = get_command_for_environment(
             &args,
-            session.user_shell(),
+            &turn_environment.shell,
             &shell_mode,
             turn.config.permissions.allow_login_shell,
         )

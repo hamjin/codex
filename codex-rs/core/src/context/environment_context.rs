@@ -1,6 +1,5 @@
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
-use crate::shell::Shell;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
@@ -41,17 +40,13 @@ impl EnvironmentContextEnvironment {
         }
     }
 
-    fn from_turn_environments(environments: &[TurnEnvironment], shell: &Shell) -> Vec<Self> {
+    fn from_turn_environments(environments: &[TurnEnvironment]) -> Vec<Self> {
         environments
             .iter()
             .map(|environment| Self {
                 id: environment.environment_id.clone(),
                 cwd: environment.cwd.clone(),
-                shell: environment
-                    .shell
-                    .as_ref()
-                    .map(|shell| shell.name().to_string())
-                    .unwrap_or_else(|| shell.name().to_string()),
+                shell: environment.shell.name().to_string(),
             })
             .collect()
     }
@@ -418,11 +413,10 @@ impl EnvironmentContext {
         )
     }
 
-    pub(crate) fn from_turn_context(turn_context: &TurnContext, shell: &Shell) -> Self {
+    pub(crate) fn from_turn_context(turn_context: &TurnContext) -> Self {
         let mut context = Self::new(
             EnvironmentContextEnvironment::from_turn_environments(
                 &turn_context.environments.turn_environments,
-                shell,
             ),
             turn_context.current_date.clone(),
             turn_context.timezone.clone(),

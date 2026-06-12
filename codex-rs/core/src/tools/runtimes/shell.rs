@@ -239,7 +239,14 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        let session_shell = ctx.session.user_shell();
+        let shell = ctx
+            .turn
+            .environments
+            .primary()
+            .map(|environment| &environment.shell)
+            .ok_or_else(|| {
+                ToolError::Rejected("the primary environment is unavailable".to_string())
+            })?;
         let (file_system_sandbox_policy, _) = attempt.permissions.to_runtime_permissions();
         let sandbox_permissions = sandbox_permissions_preserving_denied_reads(
             req.sandbox_permissions,
@@ -268,7 +275,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         let runtime_path_prepends = RuntimePathPrepends::default();
         let command = maybe_wrap_shell_lc_with_snapshot(
             &req.command,
-            session_shell.as_ref(),
+            shell,
             &req.cwd,
             &explicit_env_overrides,
             &env,
@@ -280,7 +287,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             attempt.sandbox,
             attempt.windows_sandbox_level,
         );
-        let command = if matches!(session_shell.shell_type, ShellType::PowerShell) {
+        let command = if matches!(req.shell_type, Some(ShellType::PowerShell)) {
             prefix_powershell_script_with_utf8(&command)
         } else {
             command

@@ -128,7 +128,8 @@ pub(crate) async fn execute_user_shell_command(
     // allows commands that use shell features (pipes, &&, redirects, etc.).
     // We do not source rc files or otherwise reformat the script.
     let use_login_shell = true;
-    let session_shell = session.user_shell();
+    let mut session_shell = crate::shell::default_user_shell();
+    session_shell.shell_snapshot = session.services.shell_snapshot_tx.subscribe();
     let display_command = session_shell.derive_exec_args(&command, use_login_shell);
     let mut exec_env_map = create_env(
         &turn_context.shell_environment_policy,
@@ -139,7 +140,7 @@ pub(crate) async fn execute_user_shell_command(
     }
     let exec_command = prepare_user_shell_exec_command(
         &display_command,
-        session_shell.as_ref(),
+        &session_shell,
         #[allow(deprecated)]
         &turn_context.cwd,
         &turn_context.shell_environment_policy.r#set,

@@ -2,6 +2,8 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::flat_tool_name;
 use crate::tools::handlers::unified_exec::ExecCommandArgs;
+use crate::tools::handlers::unified_exec::get_command_for_environment;
+use crate::tools::handlers::unified_exec::shell_mode_for_turn_environment;
 use codex_memories_read::usage::MEMORIES_USAGE_METRIC;
 use codex_memories_read::usage::memories_usage_kinds_from_command;
 use codex_protocol::models::ShellCommandToolCallParams;
@@ -42,39 +44,69 @@ fn shell_command_for_invocation(invocation: &ToolInvocation) -> Option<(Vec<Stri
     ) {
         (None, "shell_command") => serde_json::from_str::<ShellCommandToolCallParams>(arguments)
             .ok()
-            .map(|params| {
+            .and_then(|params| {
                 if !invocation.turn.config.permissions.allow_login_shell
                     && params.login == Some(true)
                 {
                     #[allow(deprecated)]
                     let cwd = invocation.turn.resolve_path(params.workdir).to_path_buf();
-                    return (Vec::new(), cwd);
+                    return Some((Vec::new(), cwd));
                 }
                 let use_login_shell = params
                     .login
                     .unwrap_or(invocation.turn.config.permissions.allow_login_shell);
-                let command = invocation
-                    .session
-                    .user_shell()
-                    .derive_exec_args(&params.command, use_login_shell);
+                let shell = invocation
+                    .turn
+                    .environments
+                    .primary()
+                    .map(|environment| &environment.shell)?;
+                let command = shell.derive_exec_args(&params.command, use_login_shell);
                 #[allow(deprecated)]
                 let cwd = invocation.turn.resolve_path(params.workdir).to_path_buf();
-                (command, cwd)
+                Some((command, cwd))
             }),
-        (None, "exec_command") => serde_json::from_str::<ExecCommandArgs>(arguments)
-            .ok()
-            .and_then(|params| {
-                let command = crate::tools::handlers::unified_exec::get_command(
-                    &params,
-                    invocation.session.user_shell(),
-                    &invocation.turn.unified_exec_shell_mode,
-                    invocation.turn.config.permissions.allow_login_shell,
-                )
-                .ok()?;
-                #[allow(deprecated)]
-                let cwd = invocation.turn.resolve_path(params.workdir).to_path_buf();
-                Some((command.command, cwd))
-            }),
+        (None, "exec_command") => {
+            serde_json::from_str::<ExecCommandArgs>(arguments)
+                .ok()
+                .and_then(|params| {
+                    let raw_args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+                    let environment_id = raw_args
+                        .get("environment_id")
+                        .and_then(serde_json::Value::as_str);
+                    let environment =
+                        environment_id.map_or_else(
+                            || invocation.turn.environments.primary(),
+                            |environment_id| {
+                                invocation.turn.environments.turn_environments.iter().find(
+                                    |environment| environment.environment_id == environment_id,
+                                )
+                            },
+                        )?;
+                    if environment.environment.is_remote()
+                        && raw_args.get("shell").is_some_and(|shell| !shell.is_null())
+                    {
+                        return None;
+                    }
+                    let shell_mode =
+                        shell_mode_for_turn_environment(invocation.turn.as_ref(), environment);
+                    let command = get_command_for_environment(
+                        &params,
+                        &environment.shell,
+                        &shell_mode,
+                        invocation.turn.config.permissions.allow_login_shell,
+                    )
+                    .ok()?;
+                    let cwd = params
+                        .workdir
+                        .as_deref()
+                        .filter(|workdir| !workdir.is_empty())
+                        .map_or_else(
+                            || environment.cwd.to_path_buf(),
+                            |workdir| environment.cwd.join(workdir).to_path_buf(),
+                        );
+                    Some((command.command, cwd))
+                })
+        }
         (Some(_), _) | (None, _) => None,
     }
 }

@@ -83,9 +83,20 @@ impl Session {
             ));
         }
 
-        let turn_context = self
+        let turn_context = match self
             .new_default_turn_with_sub_id(uuid::Uuid::new_v4().to_string())
-            .await;
+            .await
+        {
+            Ok(turn_context) => turn_context,
+            Err(err) => {
+                self.clear_reserved_idle_turn(&turn_state).await;
+                tracing::warn!("failed to create automatic idle turn context: {err}");
+                return Err(TryStartTurnIfIdleError::new(
+                    TryStartTurnIfIdleRejectionReason::TurnContextUnavailable,
+                    input,
+                ));
+            }
+        };
         if turn_context.collaboration_mode.mode == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
@@ -152,7 +163,13 @@ impl Session {
         let turn_context = match current_turn_context {
             Some(turn_context) => turn_context,
             None => {
-                default_turn_context = self.new_default_turn().await;
+                default_turn_context = match self.new_default_turn().await {
+                    Ok(turn_context) => turn_context,
+                    Err(err) => {
+                        tracing::warn!("failed to create context for injected items: {err}");
+                        return;
+                    }
+                };
                 default_turn_context.as_ref()
             }
         };

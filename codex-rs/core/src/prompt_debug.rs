@@ -75,7 +75,7 @@ pub(crate) async fn build_prompt_input_from_session(
     sess: &Session,
     input: Vec<UserInput>,
 ) -> CodexResult<Vec<ResponseItem>> {
-    let turn_context = sess.new_default_turn().await;
+    let turn_context = sess.new_default_turn().await?;
     sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
 

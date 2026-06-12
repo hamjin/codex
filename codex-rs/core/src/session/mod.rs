@@ -301,7 +301,6 @@ use crate::mcp::McpManager;
 use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::rollout::map_session_init_error;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
-use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
@@ -372,7 +371,6 @@ use codex_protocol::protocol::TurnModerationMetadataEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolEnvironmentMode;
-use codex_tools::UnifiedExecShellMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -425,7 +423,6 @@ pub(crate) struct CodexSpawnArgs {
     /// Root sessions and non-thread-spawn subagents pass a disabled context;
     /// `Session::new` creates the root trace itself when rollout tracing is enabled.
     pub(crate) parent_rollout_thread_trace: ThreadTraceContext,
-    pub(crate) user_shell_override: Option<shell::Shell>,
     pub(crate) parent_trace: Option<W3cTraceContext>,
     pub(crate) environment_selections: ResolvedTurnEnvironments,
     pub(crate) thread_extension_init: ExtensionDataInit,
@@ -505,7 +502,6 @@ impl Codex {
             dynamic_tools,
             metrics_service_name,
             inherited_shell_snapshot,
-            user_shell_override,
             inherited_exec_policy,
             parent_rollout_thread_trace,
             parent_trace: _,
@@ -638,7 +634,6 @@ impl Codex {
             thread_source,
             dynamic_tools,
             inherited_shell_snapshot,
-            user_shell_override,
         };
 
         // Generate a unique ID for the lifetime of this Codex session.
@@ -662,6 +657,7 @@ impl Codex {
             extensions,
             thread_extension_init,
             agent_control,
+            environment_selections,
             environment_manager,
             analytics_events_client,
             thread_store,
@@ -1222,7 +1218,10 @@ impl Session {
         state.clear_connector_selection();
     }
 
-    async fn record_initial_history(&self, conversation_history: InitialHistory) {
+    async fn record_initial_history(
+        &self,
+        conversation_history: InitialHistory,
+    ) -> CodexResult<()> {
         let is_subagent = {
             let state = self.state.lock().await;
             state
@@ -1243,7 +1242,7 @@ impl Session {
                     .await;
             }
             InitialHistory::Resumed(resumed_history) => {
-                let turn_context = self.new_default_turn().await;
+                let turn_context = self.new_default_turn().await?;
                 let rollout_items = resumed_history.history;
                 let previous_turn_settings = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
@@ -1283,7 +1282,7 @@ impl Session {
                 }
             }
             InitialHistory::Forked(rollout_items) => {
-                let turn_context = self.new_default_turn().await;
+                let turn_context = self.new_default_turn().await?;
                 self.apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
 
@@ -1308,6 +1307,7 @@ impl Session {
                 }
             }
         }
+        Ok(())
     }
 
     async fn apply_rollout_reconstruction(
@@ -1389,14 +1389,19 @@ impl Session {
         state.set_previous_turn_settings(previous_turn_settings);
     }
 
-    fn maybe_refresh_shell_snapshot_for_cwd(
+    pub(crate) fn maybe_refresh_shell_snapshot_for_turn_environment(
         &self,
         previous_cwd: &AbsolutePathBuf,
-        next_cwd: &AbsolutePathBuf,
+        turn_environment: Option<&turn_context::TurnEnvironment>,
         codex_home: &AbsolutePathBuf,
         session_source: &SessionSource,
     ) {
-        if previous_cwd == next_cwd {
+        let Some(turn_environment) =
+            turn_environment.filter(|turn_environment| !turn_environment.environment.is_remote())
+        else {
+            return;
+        };
+        if previous_cwd == &turn_environment.cwd {
             return;
         }
 
@@ -1414,8 +1419,8 @@ impl Session {
         ShellSnapshot::refresh_snapshot(
             codex_home.clone(),
             self.thread_id,
-            next_cwd.clone(),
-            self.services.user_shell.as_ref().clone(),
+            turn_environment.cwd.clone(),
+            turn_environment.shell.clone(),
             self.services.shell_snapshot_tx.clone(),
             self.services.session_telemetry.clone(),
             self.services.state_db.clone(),
@@ -1432,9 +1437,9 @@ impl Session {
             new_config,
             previous_cwd,
             permission_profile_changed,
-            next_cwd,
             codex_home,
             session_source,
+            environment_selections,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1454,28 +1459,36 @@ impl Session {
             let updated_permission_profile = updated.permission_profile();
             let permission_profile_changed =
                 previous_permission_profile != updated_permission_profile;
-            let next_cwd = updated.cwd().clone();
             let codex_home = updated.codex_home.clone();
             let session_source = updated.session_source.clone();
+            let environment_selections = updated.environment_selections().to_vec();
             state.session_configuration = updated;
             (
                 previous_config,
                 new_config,
                 previous_cwd,
                 permission_profile_changed,
-                next_cwd,
                 codex_home,
                 session_source,
+                environment_selections,
             )
         };
 
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
-        self.maybe_refresh_shell_snapshot_for_cwd(
-            &previous_cwd,
-            &next_cwd,
-            &codex_home,
-            &session_source,
-        );
+        match crate::environment_selection::resolve_environment_selections(
+            self.services.environment_manager.as_ref(),
+            &environment_selections,
+        )
+        .await
+        {
+            Ok(environments) => self.maybe_refresh_shell_snapshot_for_turn_environment(
+                &previous_cwd,
+                environments.primary(),
+                &codex_home,
+                &session_source,
+            ),
+            Err(err) => warn!("failed to resolve shell snapshot environment: {err}"),
+        }
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
@@ -1555,12 +1568,8 @@ impl Session {
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         self.services.skills_manager.clear_cache();
         self.services.plugins_manager.clear_cache();
-        let hooks = build_hooks_for_config(
-            config.as_ref(),
-            self.services.plugins_manager.as_ref(),
-            self.services.user_shell.as_ref(),
-        )
-        .await;
+        let hooks =
+            build_hooks_for_config(config.as_ref(), self.services.plugins_manager.as_ref()).await;
 
         let state = self.state.lock().await;
         // A newer refresh may have updated the config while this hook build was in flight.
@@ -1677,13 +1686,11 @@ impl Session {
             let state = self.state.lock().await;
             state.previous_turn_settings()
         };
-        let shell = self.user_shell();
         let exec_policy = self.services.exec_policy.current();
         crate::context_manager::updates::build_settings_update_items(
             reference_context_item,
             previous_turn_settings.as_ref(),
             current_context,
-            shell.as_ref(),
             exec_policy.as_ref(),
             self.features.enabled(Feature::Personality),
         )
@@ -2999,14 +3006,13 @@ impl Session {
             );
         }
         if turn_context.config.include_environment_context {
-            let shell = self.user_shell();
             let subagents = self
                 .services
                 .agent_control
                 .format_environment_context_subagents(self.thread_id)
                 .await;
             contextual_user_sections.push(
-                crate::context::EnvironmentContext::from_turn_context(turn_context, shell.as_ref())
+                crate::context::EnvironmentContext::from_turn_context(turn_context)
                     .with_subagents(subagents)
                     .render(),
             );
@@ -3462,10 +3468,6 @@ impl Session {
         self.services.hooks.load_full()
     }
 
-    pub(crate) fn user_shell(&self) -> Arc<shell::Shell> {
-        Arc::clone(&self.services.user_shell)
-    }
-
     pub(crate) async fn current_rollout_path(&self) -> anyhow::Result<Option<PathBuf>> {
         let Some(live_thread) = self.live_thread() else {
             return Ok(None);
@@ -3535,11 +3537,8 @@ pub(crate) fn emit_subagent_session_started(
 }
 
 /// Builds the hook engine for one config snapshot, including any enabled plugin hooks.
-async fn build_hooks_for_config(
-    config: &Config,
-    plugins_manager: &PluginsManager,
-    user_shell: &crate::shell::Shell,
-) -> Hooks {
+async fn build_hooks_for_config(config: &Config, plugins_manager: &PluginsManager) -> Hooks {
+    let user_shell = crate::shell::default_user_shell();
     let mut hook_shell_argv = user_shell.derive_exec_args("", /*use_login_shell*/ false);
     let hook_shell_program = hook_shell_argv.remove(0);
     let _ = hook_shell_argv.pop();

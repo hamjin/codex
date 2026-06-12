@@ -104,7 +104,6 @@ pub(crate) struct SessionConfiguration {
     pub(super) thread_source: Option<ThreadSource>,
     pub(super) dynamic_tools: Vec<DynamicToolSpec>,
     pub(super) inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
-    pub(super) user_shell_override: Option<shell::Shell>,
 }
 
 impl SessionConfiguration {
@@ -487,6 +486,7 @@ impl Session {
         extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
         thread_extension_init: ExtensionDataInit,
         agent_control: AgentControl,
+        initial_environments: ResolvedTurnEnvironments,
         environment_manager: Arc<EnvironmentManager>,
         analytics_events_client: Option<AnalyticsEventsClient>,
         thread_store: Arc<dyn ThreadStore>,
@@ -519,7 +519,6 @@ impl Session {
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
-        // - perform default shell discovery
         // - load history metadata (skipped for subagents)
         let thread_persistence_fut = async {
             if config.ephemeral {
@@ -800,47 +799,29 @@ impl Session {
                 mcp_servers.keys().map(String::as_str).collect(),
             );
 
-            let use_zsh_fork_shell = config.features.enabled(Feature::ShellZshFork);
-            let mut default_shell = if let Some(user_shell_override) =
-                session_configuration.user_shell_override.clone()
-            {
-                user_shell_override
-            } else if use_zsh_fork_shell {
-                let zsh_path = config.zsh_path.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "zsh fork feature enabled, but no packaged zsh fork is available for this install"
-                    )
-                })?;
-                let zsh_path = zsh_path.to_path_buf();
-                shell::get_shell(shell::ShellType::Zsh, Some(&zsh_path)).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "zsh fork feature enabled, but packaged zsh fork `{}` is not usable",
-                        zsh_path.display()
-                    )
-                })?
-            } else {
-                shell::default_user_shell()
-            };
             // Create the mutable state for the Session.
             let shell_snapshot_tx = if config.features.enabled(Feature::ShellSnapshot) {
                 if let Some(snapshot) = session_configuration.inherited_shell_snapshot.clone() {
-                    let (tx, rx) = watch::channel(Some(snapshot));
-                    default_shell.shell_snapshot = rx;
+                    let (tx, _rx) = watch::channel(Some(snapshot));
                     tx
-                } else {
+                } else if let Some(turn_environment) = initial_environments
+                    .primary()
+                    .filter(|turn_environment| !turn_environment.environment.is_remote())
+                {
+                    let mut shell = turn_environment.shell.clone();
                     ShellSnapshot::start_snapshotting(
                         config.codex_home.clone(),
                         thread_id,
-                        session_configuration.cwd().clone(),
-                        &mut default_shell,
+                        turn_environment.cwd.clone(),
+                        &mut shell,
                         session_telemetry.clone(),
                         state_db_ctx.clone(),
                     )
+                } else {
+                    watch::channel(None).0
                 }
             } else {
-                let (tx, rx) = watch::channel(None);
-                default_shell.shell_snapshot = rx;
-                tx
+                watch::channel(None).0
             };
             let thread_name =
                 thread_title_from_thread_store(live_thread_init.as_ref(), &thread_store, thread_id)
@@ -912,8 +893,7 @@ impl Session {
                     (None, None)
                 };
 
-            let hooks =
-                build_hooks_for_config(&config, plugins_manager.as_ref(), &default_shell).await;
+            let hooks = build_hooks_for_config(&config, plugins_manager.as_ref()).await;
             for warning in hooks.startup_warnings() {
                 post_session_configured_events.push(Event {
                     id: INITIAL_SUBMIT_ID.to_owned(),
@@ -987,7 +967,6 @@ impl Session {
                 analytics_events_client,
                 hooks: arc_swap::ArcSwap::from_pointee(hooks),
                 rollout_thread_trace,
-                user_shell: Arc::new(default_shell),
                 shell_snapshot_tx,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 exec_policy,
@@ -1175,7 +1154,7 @@ impl Session {
             };
 
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
-            Box::pin(sess.record_initial_history(initial_history)).await;
+            Box::pin(sess.record_initial_history(initial_history)).await?;
             {
                 let mut state = sess.state.lock().await;
                 state.queue_pending_session_start_source(session_start_source);

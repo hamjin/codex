@@ -1,4 +1,6 @@
 use crate::sandboxing::SandboxPermissions;
+use crate::session::turn_context::TurnContext;
+use crate::session::turn_context::TurnEnvironment;
 use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::shell::get_shell_by_model_provided_path;
@@ -7,11 +9,13 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
+#[cfg(test)]
 use codex_exec_server::Environment;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_tools::UnifiedExecShellMode;
 use serde::Deserialize;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -96,9 +100,19 @@ fn post_unified_exec_tool_use_payload(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn get_command(
     args: &ExecCommandArgs,
     session_shell: Arc<Shell>,
+    shell_mode: &UnifiedExecShellMode,
+    allow_login_shell: bool,
+) -> Result<ResolvedCommand, String> {
+    get_command_for_environment(args, session_shell.as_ref(), shell_mode, allow_login_shell)
+}
+
+pub(crate) fn get_command_for_environment(
+    args: &ExecCommandArgs,
+    environment_shell: &Shell,
     shell_mode: &UnifiedExecShellMode,
     allow_login_shell: bool,
 ) -> Result<ResolvedCommand, String> {
@@ -119,7 +133,7 @@ pub(crate) fn get_command(
                 shell.shell_snapshot = crate::shell::empty_shell_snapshot_receiver();
                 shell
             });
-            let shell = model_shell.as_ref().unwrap_or(session_shell.as_ref());
+            let shell = model_shell.as_ref().unwrap_or(environment_shell);
             Ok(ResolvedCommand {
                 command: shell.derive_exec_args(&args.cmd, use_login_shell),
                 shell_type: shell.shell_type,
@@ -128,7 +142,8 @@ pub(crate) fn get_command(
         UnifiedExecShellMode::ZshFork(zsh_fork_config) => {
             if args.shell.is_some() {
                 return Err(
-                    "`shell` is not supported for local zsh-fork exec; omit `shell` to use zsh-fork, or target a remote environment where `shell` is supported.".to_string(),
+                    "`shell` is not supported for local zsh-fork exec; omit `shell` to use zsh-fork."
+                        .to_string(),
                 );
             }
 
@@ -144,6 +159,23 @@ pub(crate) fn get_command(
     }
 }
 
+pub(crate) fn shell_mode_for_turn_environment(
+    turn: &TurnContext,
+    environment: &TurnEnvironment,
+) -> UnifiedExecShellMode {
+    if environment.environment.is_remote() {
+        return UnifiedExecShellMode::Direct;
+    }
+
+    UnifiedExecShellMode::for_session(
+        codex_tools::unified_exec_feature_mode_for_features(turn.features.get()),
+        crate::tools::tool_user_shell_type(&environment.shell),
+        turn.config.zsh_path.as_ref(),
+        turn.config.main_execve_wrapper_exe.as_ref(),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn shell_mode_for_environment(
     turn_shell_mode: &UnifiedExecShellMode,
     environment: &Environment,
