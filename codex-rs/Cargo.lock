@@ -2629,7 +2629,6 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-async-utils",
- "codex-code-mode",
  "codex-code-mode-client",
  "codex-code-mode-protocol",
  "codex-config",
@@ -3768,7 +3767,7 @@ name = "codex-rollout-trace"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "codex-code-mode",
+ "codex-code-mode-protocol",
  "codex-protocol",
  "http 1.4.0",
  "pretty_assertions",
@@ -3984,7 +3983,7 @@ name = "codex-tools"
 version = "0.0.0"
 dependencies = [
  "codex-app-server-protocol",
- "codex-code-mode",
+ "codex-code-mode-protocol",
  "codex-features",
  "codex-protocol",
  "codex-utils-absolute-path",
