@@ -12,6 +12,7 @@ use codex_protocol::error::CodexErr;
 use http::HeaderMap;
 use http::HeaderValue;
 
+use crate::anthropic_auth::AnthropicApiKeyAuthProvider;
 use crate::bearer_auth_provider::BearerAuthProvider;
 
 const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
@@ -89,7 +90,11 @@ pub(crate) fn resolve_provider_auth(
         ));
     }
 
-    if let Some(auth) = bearer_auth_for_provider(provider)? {
+    if provider.wire_api == codex_model_provider_info::WireApi::AnthropicMessages {
+        if let Some(anthropic_auth) = anthropic_auth_for_provider(provider)? {
+            return Ok(Arc::new(anthropic_auth));
+        }
+    } else if let Some(auth) = bearer_auth_for_provider(provider)? {
         return Ok(Arc::new(auth));
     }
 
@@ -102,12 +107,30 @@ pub(crate) fn resolve_provider_auth(
 fn bearer_auth_for_provider(
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<Option<BearerAuthProvider>> {
+    if provider.wire_api == codex_model_provider_info::WireApi::AnthropicMessages {
+        return Ok(None);
+    }
+
     if let Some(api_key) = provider.api_key()? {
         return Ok(Some(BearerAuthProvider::new(api_key)));
     }
 
     if let Some(token) = provider.experimental_bearer_token.clone() {
         return Ok(Some(BearerAuthProvider::new(token)));
+    }
+
+    Ok(None)
+}
+
+fn anthropic_auth_for_provider(
+    provider: &ModelProviderInfo,
+) -> codex_protocol::error::Result<Option<AnthropicApiKeyAuthProvider>> {
+    if let Some(api_key) = provider.api_key()? {
+        return Ok(Some(AnthropicApiKeyAuthProvider::new(api_key)));
+    }
+
+    if let Some(token) = provider.experimental_bearer_token.clone() {
+        return Ok(Some(AnthropicApiKeyAuthProvider::new(token)));
     }
 
     Ok(None)

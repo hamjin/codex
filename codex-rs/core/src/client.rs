@@ -30,8 +30,13 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use codex_api::AnthropicClient as ApiAnthropicClient;
+use codex_api::AnthropicMessage;
+use codex_api::AnthropicMessagesRequest;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
+use codex_api::ChatCompletionsClient as ApiChatCompletionsClient;
+use codex_api::ChatCompletionsRequest;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::Compression;
@@ -1297,6 +1302,135 @@ impl ModelClientSession {
         }
     }
 
+    /// Streams a turn via the Anthropic Messages API.
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(
+        name = "model_client.stream_anthropic_api",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = %self.client.state.provider.info().wire_api,
+            transport = "anthropic_http",
+            http.method = "POST",
+            api.path = "messages"
+        )
+    )]
+    async fn stream_anthropic_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        let client_setup = self.client.current_client_setup().await?;
+        let transport = ReqwestTransport::new(build_reqwest_client());
+
+        let request = self.client.build_responses_request(
+            &client_setup.api_provider,
+            prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+        )?;
+        let anthropic_request = build_anthropic_request(&request, model_info);
+
+        let inference_trace_attempt = inference_trace.start_attempt();
+        inference_trace_attempt.record_started(&request);
+        let client =
+            ApiAnthropicClient::new(transport, client_setup.api_provider, client_setup.api_auth);
+        let stream_result = client.stream_request(anthropic_request).await;
+
+        match stream_result {
+            Ok(stream) => {
+                let (stream, _) =
+                    map_response_stream(stream, session_telemetry.clone(), inference_trace_attempt);
+                Ok(stream)
+            }
+            Err(err) => {
+                let err = map_api_error(err);
+                inference_trace_attempt.record_failed(
+                    &err,
+                    /*request_id*/ None,
+                    /*output_items*/ &[],
+                );
+                Err(err)
+            }
+        }
+    }
+
+    /// Streams a turn via the OpenAI Chat Completions API.
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(
+        name = "model_client.stream_chat_completions_api",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = %self.client.state.provider.info().wire_api,
+            transport = "chat_completions_http",
+            http.method = "POST",
+            api.path = "chat/completions"
+        )
+    )]
+    async fn stream_chat_completions_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        let client_setup = self.client.current_client_setup().await?;
+        let transport = ReqwestTransport::new(build_reqwest_client());
+
+        let request = self.client.build_responses_request(
+            &client_setup.api_provider,
+            prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+        )?;
+        let chat_request = build_chat_completions_request(&request, model_info);
+
+        let inference_trace_attempt = inference_trace.start_attempt();
+        inference_trace_attempt.record_started(&request);
+        let client = ApiChatCompletionsClient::new(
+            transport,
+            client_setup.api_provider,
+            client_setup.api_auth,
+        );
+        let stream_result = client.stream_request(chat_request).await;
+
+        match stream_result {
+            Ok(stream) => {
+                let (stream, _) =
+                    map_response_stream(stream, session_telemetry.clone(), inference_trace_attempt);
+                Ok(stream)
+            }
+            Err(err) => {
+                let err = map_api_error(err);
+                inference_trace_attempt.record_failed(
+                    &err,
+                    /*request_id*/ None,
+                    /*output_items*/ &[],
+                );
+                Err(err)
+            }
+        }
+    }
+
     /// Streams a turn via the Responses API over WebSocket transport.
     #[allow(clippy::too_many_arguments)]
     #[instrument(
@@ -1592,6 +1726,32 @@ impl ModelClientSession {
                 }
 
                 self.stream_responses_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    summary,
+                    service_tier,
+                    responses_metadata,
+                    inference_trace,
+                )
+                .await
+            }
+            WireApi::AnthropicMessages => {
+                self.stream_anthropic_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    summary,
+                    service_tier,
+                    responses_metadata,
+                    inference_trace,
+                )
+                .await
+            }
+            WireApi::ChatCompletions => {
+                self.stream_chat_completions_api(
                     prompt,
                     model_info,
                     session_telemetry,
@@ -2181,6 +2341,269 @@ impl WebsocketTelemetry for ApiTelemetry {
     ) {
         self.session_telemetry
             .record_websocket_event(result, duration);
+    }
+}
+
+/// Builds an Anthropic Messages API request from a Responses API request.
+///
+/// Maps `instructions` to Anthropic's `system` field and `input` items
+/// to Anthropic `messages` with content blocks.
+fn build_anthropic_request(
+    request: &ResponsesApiRequest,
+    model_info: &ModelInfo,
+) -> AnthropicMessagesRequest {
+    use codex_api::AnthropicSystem;
+
+    let max_tokens = model_info.max_context_window.unwrap_or(200_000) as u32;
+    let system = if request.instructions.is_empty() {
+        None
+    } else {
+        Some(AnthropicSystem::Text(request.instructions.clone()))
+    };
+
+    let messages = responses_input_to_anthropic_messages(&request.input);
+
+    let tools = if request.tools.is_empty() {
+        None
+    } else {
+        Some(
+            request
+                .tools
+                .iter()
+                .map(|tool| codex_api::AnthropicTool {
+                    name: tool
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    description: tool
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    input_schema: tool
+                        .get("parameters")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({"type": "object", "properties": {}})),
+                })
+                .collect(),
+        )
+    };
+
+    AnthropicMessagesRequest {
+        model: request.model.clone(),
+        max_tokens,
+        system,
+        messages,
+        tools,
+        stream: true,
+    }
+}
+
+/// Converts Responses API `input` items into Anthropic messages.
+fn responses_input_to_anthropic_messages(input: &[ResponseItem]) -> Vec<AnthropicMessage> {
+    use codex_api::AnthropicContentBlock;
+    use codex_api::AnthropicMessage;
+    use codex_api::AnthropicMessageContent;
+    use codex_api::AnthropicRole;
+    use codex_protocol::models::ContentItem;
+
+    let mut messages = Vec::new();
+
+    for item in input {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let anthropic_role = match role.as_str() {
+                    "user" | "developer" => AnthropicRole::User,
+                    _ => AnthropicRole::Assistant,
+                };
+                // Extract text from content items
+                let text = content
+                    .iter()
+                    .filter_map(|item| match item {
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    continue;
+                }
+                messages.push(AnthropicMessage {
+                    role: anthropic_role,
+                    content: AnthropicMessageContent::Text(text),
+                });
+            }
+            ResponseItem::FunctionCall {
+                id,
+                call_id,
+                name,
+                arguments,
+                ..
+            } => {
+                let call_id_unwrapped = if !call_id.is_empty() {
+                    call_id.clone()
+                } else {
+                    id.clone().unwrap_or_default()
+                };
+                messages.push(AnthropicMessage {
+                    role: AnthropicRole::Assistant,
+                    content: AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolUse {
+                            id: call_id_unwrapped,
+                            name: name.clone(),
+                            input: serde_json::from_str(arguments)
+                                .unwrap_or(serde_json::Value::String(arguments.clone())),
+                        },
+                    ]),
+                });
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
+                messages.push(AnthropicMessage {
+                    role: AnthropicRole::User,
+                    content: AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: call_id.clone(),
+                            content: output.to_string(),
+                            is_error: false,
+                        },
+                    ]),
+                });
+            }
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
+                messages.push(AnthropicMessage {
+                    role: AnthropicRole::User,
+                    content: AnthropicMessageContent::Blocks(vec![
+                        AnthropicContentBlock::ToolResult {
+                            tool_use_id: call_id.clone(),
+                            content: output.to_string(),
+                            is_error: false,
+                        },
+                    ]),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    messages
+}
+
+/// Builds an OpenAI Chat Completions API request from a Responses API request.
+fn build_chat_completions_request(
+    request: &ResponsesApiRequest,
+    model_info: &ModelInfo,
+) -> ChatCompletionsRequest {
+    use codex_api::ChatMessage;
+    use codex_api::ChatRole;
+    use codex_protocol::models::ContentItem;
+
+    let mut messages: Vec<ChatMessage> = Vec::new();
+
+    // Add system instructions as first message
+    if !request.instructions.is_empty() {
+        messages.push(ChatMessage {
+            role: ChatRole::System,
+            content: Some(request.instructions.clone()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    // Convert input items to chat messages
+    for item in &request.input {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let chat_role = match role.as_str() {
+                    "user" | "developer" => ChatRole::User,
+                    "system" => ChatRole::System,
+                    _ => ChatRole::Assistant,
+                };
+                let text = content
+                    .iter()
+                    .filter_map(|item| match item {
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                messages.push(ChatMessage {
+                    role: chat_role,
+                    content: if text.is_empty() { None } else { Some(text) },
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+            ResponseItem::FunctionCall {
+                id,
+                call_id,
+                name,
+                arguments,
+                ..
+            } => {
+                let call_id_val = if !call_id.is_empty() {
+                    call_id.clone()
+                } else {
+                    id.clone().unwrap_or_default()
+                };
+                messages.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: None,
+                    tool_calls: Some(vec![codex_api::ChatToolCall {
+                        index: Some(0),
+                        id: Some(call_id_val),
+                        tool_type: Some("function".to_string()),
+                        function: Some(codex_api::ChatFunctionCall {
+                            name: Some(name.clone()),
+                            arguments: Some(arguments.clone()),
+                        }),
+                    }]),
+                    tool_call_id: None,
+                });
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
+                messages.push(ChatMessage {
+                    role: ChatRole::Tool,
+                    content: Some(output.to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some(call_id.clone()),
+                });
+            }
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
+                messages.push(ChatMessage {
+                    role: ChatRole::Tool,
+                    content: Some(output.to_string()),
+                    tool_calls: None,
+                    tool_call_id: Some(call_id.clone()),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let tools = if request.tools.is_empty() {
+        None
+    } else {
+        Some(request.tools.clone())
+    };
+
+    let max_tokens = model_info.max_context_window.unwrap_or(200_000) as u32;
+
+    ChatCompletionsRequest {
+        model: request.model.clone(),
+        messages,
+        tools,
+        tool_choice: Some("auto".to_string()),
+        stream: true,
+        reasoning_effort: None,
+        max_tokens: Some(max_tokens),
     }
 }
 
